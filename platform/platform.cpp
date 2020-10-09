@@ -17,9 +17,10 @@
 #define LOG_TAG "hwc-platform"
 
 #include "platform.h"
-#include "drmdevice.h"
 
 #include <log/log.h>
+
+#include "drm/DrmDevice.h"
 
 namespace android {
 
@@ -75,6 +76,13 @@ int Planner::PlanStage::ValidatePlane(DrmPlane *plane, DrmHwcLayer *layer) {
     }
     if (ret)
       ALOGE("Expected a valid blend mode on plane %d", plane->id());
+  }
+
+  uint32_t format = layer->buffer->format;
+  if (!plane->IsFormatSupported(format)) {
+    ALOGE("Plane %d does not supports %c%c%c%c format", plane->id(), format,
+          format >> 8, format >> 16, format >> 24);
+    return -EINVAL;
   }
 
   return ret;

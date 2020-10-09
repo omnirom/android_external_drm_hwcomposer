@@ -17,11 +17,11 @@
 #define ATRACE_TAG ATRACE_TAG_GRAPHICS
 #define LOG_TAG "hwc-drm-utils"
 
-#include "drmhwcomposer.h"
-#include "platform.h"
-
 #include <log/log.h>
 #include <ui/GraphicBufferMapper.h>
+
+#include "drmhwcomposer.h"
+#include "platform/platform.h"
 
 #define UNUSED(x) (void)(x)
 
@@ -114,13 +114,9 @@ int DrmHwcLayer::ImportBuffer(Importer *importer) {
 
   const hwc_drm_bo *bo = buffer.operator->();
 
-  unsigned int layer_count;
-  for (layer_count = 0; layer_count < HWC_DRM_BO_MAX_PLANES; ++layer_count)
-    if (bo->gem_handles[layer_count] == 0)
-      break;
-
-  ret = handle.CopyBufferHandle(sf_handle, bo->width, bo->height, layer_count,
-                                bo->hal_format, bo->usage, bo->pixel_stride);
+  ret = handle.CopyBufferHandle(sf_handle, bo->width, bo->height,
+                                1 /*layer_count*/, bo->hal_format, bo->usage,
+                                bo->pixel_stride);
   if (ret)
     return ret;
 
