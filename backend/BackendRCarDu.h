@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019 The Android Open Source Project
+ * Copyright (C) 2020 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,26 +14,17 @@
  * limitations under the License.
  */
 
-#ifndef ANDROID_PLATFORM_HISI_H_
-#define ANDROID_PLATFORM_HISI_H_
+#ifndef HWC_DISPLAY_BACKEND_RCAR_DU_H
+#define HWC_DISPLAY_BACKEND_RCAR_DU_H
 
-#include "platform.h"
-#include "platformdrmgeneric.h"
-
-#include <stdatomic.h>
-
-#include <hardware/gralloc.h>
+#include "Backend.h"
 
 namespace android {
 
-class MesonImporter : public DrmGenericImporter {
+class BackendRCarDu : public Backend {
  public:
-  using DrmGenericImporter::DrmGenericImporter;
-
-  int ConvertBoInfo(buffer_handle_t handle, hwc_drm_bo_t *bo) override;
-
- private:
-  uint64_t ConvertGrallocFormatToDrmModifiers(uint64_t flags);
+  bool IsClientLayer(DrmHwcTwo::HwcDisplay *display,
+                     DrmHwcTwo::HwcLayer *layer) override;
 };
 }  // namespace android
 
