@@ -17,13 +17,13 @@
 #ifndef ANDROID_PLATFORM_DRM_GENERIC_H_
 #define ANDROID_PLATFORM_DRM_GENERIC_H_
 
-#include "drmdevice.h"
-#include "platform.h"
-
+#include <drm/drm_fourcc.h>
 #include <hardware/gralloc.h>
+
 #include <map>
 
-#include <drm/drm_fourcc.h>
+#include "drm/DrmDevice.h"
+#include "platform.h"
 
 #ifndef DRM_FORMAT_INVALID
 #define DRM_FORMAT_INVALID 0
@@ -48,13 +48,13 @@ class DrmGenericImporter : public Importer {
 
   uint32_t ConvertHalFormatToDrm(uint32_t hal_format);
   uint32_t DrmFormatToBitsPerPixel(uint32_t drm_format);
+  bool GetYuvPlaneInfo(int num_fds, buffer_handle_t handle, hwc_drm_bo_t *bo);
 
  protected:
   DrmDevice *drm_;
 
  private:
   const gralloc_module_t *gralloc_;
-  bool exclude_non_hwfb_;
 
   int CloseHandle(uint32_t gem_handle);
   std::map<uint32_t, int> gem_refcount_;
