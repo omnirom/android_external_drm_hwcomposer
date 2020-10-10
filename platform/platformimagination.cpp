@@ -1,6 +1,7 @@
 #define LOG_TAG "hwc-platform-imagination"
 
 #include "platformimagination.h"
+
 #include <log/log.h>
 #include <xf86drm.h>
 
@@ -59,9 +60,4 @@ int ImaginationImporter::ConvertBoInfo(buffer_handle_t handle,
   return 0;
 }
 
-std::unique_ptr<Planner> Planner::CreateInstance(DrmDevice *) {
-  std::unique_ptr<Planner> planner(new Planner);
-  planner->AddStage<PlanStageGreedy>();
-  return planner;
-}
 }  // namespace android
