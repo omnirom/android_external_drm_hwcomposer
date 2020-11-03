@@ -24,10 +24,11 @@
 #include <map>
 
 #include "compositor/DrmDisplayCompositor.h"
+#include "compositor/Planner.h"
+#include "drm/DrmGenericImporter.h"
 #include "drm/ResourceManager.h"
 #include "drm/VSyncWorker.h"
 #include "drmhwcomposer.h"
-#include "platform/platform.h"
 
 namespace android {
 
@@ -41,6 +42,17 @@ class DrmHwcTwo : public hwc2_device_t {
   DrmHwcTwo();
 
   HWC2::Error Init();
+
+  hwc2_callback_data_t hotplug_callback_data_ = NULL;
+  HWC2_PFN_HOTPLUG hotplug_callback_hook_ = NULL;
+  std::mutex hotplug_callback_lock;
+
+  void SetHotplugCallback(hwc2_callback_data_t data,
+                          hwc2_function_pointer_t hook) {
+    const std::lock_guard<std::mutex> lock(hotplug_callback_lock);
+    hotplug_callback_data_ = data;
+    hotplug_callback_hook_ = reinterpret_cast<HWC2_PFN_HOTPLUG>(hook);
+  }
 
   class HwcLayer {
    public:
@@ -149,14 +161,6 @@ class DrmHwcTwo : public hwc2_device_t {
     android_dataspace_t dataspace_ = HAL_DATASPACE_UNKNOWN;
   };
 
-  struct HwcCallback {
-    HwcCallback(hwc2_callback_data_t d, hwc2_function_pointer_t f)
-        : data(d), func(f) {
-    }
-    hwc2_callback_data_t data;
-    hwc2_function_pointer_t func;
-  };
-
   class HwcDisplay {
    public:
     HwcDisplay(ResourceManager *resource_manager, DrmDevice *drm,
@@ -165,8 +169,8 @@ class DrmHwcTwo : public hwc2_device_t {
     HwcDisplay(const HwcDisplay &) = delete;
     HWC2::Error Init(std::vector<DrmPlane *> *planes);
 
-    HWC2::Error RegisterVsyncCallback(hwc2_callback_data_t data,
-                                      hwc2_function_pointer_t func);
+    void RegisterVsyncCallback(hwc2_callback_data_t data,
+                               hwc2_function_pointer_t func);
     void RegisterRefreshCallback(hwc2_callback_data_t data,
                                  hwc2_function_pointer_t func);
     HWC2::Error CreateComposition(bool test);
@@ -422,7 +426,6 @@ class DrmHwcTwo : public hwc2_device_t {
 
   ResourceManager resource_manager_;
   std::map<hwc2_display_t, HwcDisplay> displays_;
-  std::map<HWC2::Callback, HwcCallback> callbacks_;
 
   std::string mDumpString;
 };

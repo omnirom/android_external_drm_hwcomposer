@@ -28,25 +28,10 @@
 #include <string>
 
 #include "backend/BackendManager.h"
+#include "bufferinfo/BufferInfoGetter.h"
 #include "compositor/DrmDisplayComposition.h"
 
 namespace android {
-
-class DrmVsyncCallback : public VsyncCallback {
- public:
-  DrmVsyncCallback(hwc2_callback_data_t data, hwc2_function_pointer_t hook)
-      : data_(data), hook_(hook) {
-  }
-
-  void Callback(int display, int64_t timestamp) {
-    auto hook = reinterpret_cast<HWC2_PFN_VSYNC>(hook_);
-    hook(data_, display, timestamp);
-  }
-
- private:
-  hwc2_callback_data_t data_;
-  hwc2_function_pointer_t hook_;
-};
 
 DrmHwcTwo::DrmHwcTwo() {
   common.tag = HARDWARE_DEVICE_TAG;
@@ -194,17 +179,10 @@ HWC2::Error DrmHwcTwo::RegisterCallback(int32_t descriptor,
                                         hwc2_callback_data_t data,
                                         hwc2_function_pointer_t function) {
   supported(__func__);
-  auto callback = static_cast<HWC2::Callback>(descriptor);
 
-  if (!function) {
-    callbacks_.erase(callback);
-    return HWC2::Error::None;
-  }
-
-  callbacks_.emplace(callback, HwcCallback(data, function));
-
-  switch (callback) {
+  switch (static_cast<HWC2::Callback>(descriptor)) {
     case HWC2::Callback::Hotplug: {
+      SetHotplugCallback(data, function);
       auto &drmDevices = resource_manager_.getDrmDevices();
       for (auto &device : drmDevices)
         HandleInitialHotplugState(device.get());
@@ -317,21 +295,16 @@ HWC2::Error DrmHwcTwo::HwcDisplay::ChosePreferredConfig() {
   return SetActiveConfig(connector_->get_preferred_mode_id());
 }
 
-HWC2::Error DrmHwcTwo::HwcDisplay::RegisterVsyncCallback(
+void DrmHwcTwo::HwcDisplay::RegisterVsyncCallback(
     hwc2_callback_data_t data, hwc2_function_pointer_t func) {
   supported(__func__);
-  auto callback = std::make_shared<DrmVsyncCallback>(data, func);
-  vsync_worker_.RegisterCallback(std::move(callback));
-  return HWC2::Error::None;
+  vsync_worker_.RegisterClientCallback(data, func);
 }
 
 void DrmHwcTwo::HwcDisplay::RegisterRefreshCallback(
     hwc2_callback_data_t data, hwc2_function_pointer_t func) {
   supported(__func__);
-  auto hook = reinterpret_cast<HWC2_PFN_REFRESH>(func);
-  compositor_.SetRefreshCallback([data, hook](int display) {
-    hook(data, static_cast<hwc2_display_t>(display));
-  });
+  compositor_.SetRefreshCallback(data, func);
 }
 
 HWC2::Error DrmHwcTwo::HwcDisplay::AcceptDisplayChanges() {
@@ -785,11 +758,6 @@ HWC2::Error DrmHwcTwo::HwcDisplay::SetActiveConfig(hwc2_config_t config) {
                               .right = static_cast<int>(mode->h_display()),
                               .bottom = static_cast<int>(mode->v_display())};
   client_layer_.SetLayerDisplayFrame(display_frame);
-  hwc_frect_t source_crop = {.left = 0.0f,
-                             .top = 0.0f,
-                             .right = mode->h_display() + 0.0f,
-                             .bottom = mode->v_display() + 0.0f};
-  client_layer_.SetLayerSourceCrop(source_crop);
 
   return HWC2::Error::None;
 }
@@ -804,14 +772,29 @@ HWC2::Error DrmHwcTwo::HwcDisplay::SetClientTarget(buffer_handle_t target,
   client_layer_.set_buffer(target);
   client_layer_.set_acquire_fence(uf.get());
   client_layer_.SetLayerDataspace(dataspace);
+
+  /* TODO: Do not update source_crop every call.
+   * It makes sense to do it once after every hotplug event. */
+  hwc_drm_bo bo{};
+  BufferInfoGetter::GetInstance()->ConvertBoInfo(target, &bo);
+
+  hwc_frect_t source_crop = {.left = 0.0f,
+                             .top = 0.0f,
+                             .right = bo.width + 0.0f,
+                             .bottom = bo.height + 0.0f};
+  client_layer_.SetLayerSourceCrop(source_crop);
+
   return HWC2::Error::None;
 }
 
 HWC2::Error DrmHwcTwo::HwcDisplay::SetColorMode(int32_t mode) {
   supported(__func__);
 
-  if (mode != HAL_COLOR_MODE_NATIVE)
+  if (mode < HAL_COLOR_MODE_NATIVE || mode > HAL_COLOR_MODE_BT2100_HLG)
     return HWC2::Error::BadParameter;
+
+  if (mode != HAL_COLOR_MODE_NATIVE)
+    return HWC2::Error::Unsupported;
 
   color_mode_ = mode;
   return HWC2::Error::None;
@@ -978,10 +961,19 @@ HWC2::Error DrmHwcTwo::HwcDisplay::GetRenderIntents(
 
 HWC2::Error DrmHwcTwo::HwcDisplay::SetColorModeWithIntent(int32_t mode,
                                                           int32_t intent) {
+  if (intent < HAL_RENDER_INTENT_COLORIMETRIC ||
+      intent > HAL_RENDER_INTENT_TONE_MAP_ENHANCE)
+    return HWC2::Error::BadParameter;
+
+  if (mode < HAL_COLOR_MODE_NATIVE || mode > HAL_COLOR_MODE_BT2100_HLG)
+    return HWC2::Error::BadParameter;
+
   if (mode != HAL_COLOR_MODE_NATIVE)
-    return HWC2::Error::BadParameter;
+    return HWC2::Error::Unsupported;
+
   if (intent != HAL_RENDER_INTENT_COLORIMETRIC)
-    return HWC2::Error::BadParameter;
+    return HWC2::Error::Unsupported;
+
   color_mode_ = mode;
   return HWC2::Error::None;
 }
@@ -1110,14 +1102,13 @@ void DrmHwcTwo::HwcLayer::PopulateDrmLayer(DrmHwcLayer *layer) {
 }
 
 void DrmHwcTwo::HandleDisplayHotplug(hwc2_display_t displayid, int state) {
-  auto cb = callbacks_.find(HWC2::Callback::Hotplug);
-  if (cb == callbacks_.end())
-    return;
+  const std::lock_guard<std::mutex> lock(hotplug_callback_lock);
 
-  auto hotplug = reinterpret_cast<HWC2_PFN_HOTPLUG>(cb->second.func);
-  hotplug(cb->second.data, displayid,
-          (state == DRM_MODE_CONNECTED ? HWC2_CONNECTION_CONNECTED
-                                       : HWC2_CONNECTION_DISCONNECTED));
+  if (hotplug_callback_hook_ && hotplug_callback_data_)
+    hotplug_callback_hook_(hotplug_callback_data_, displayid,
+                           state == DRM_MODE_CONNECTED
+                               ? HWC2_CONNECTION_CONNECTED
+                               : HWC2_CONNECTION_DISCONNECTED);
 }
 
 void DrmHwcTwo::HandleInitialHotplugState(DrmDevice *drmDevice) {
