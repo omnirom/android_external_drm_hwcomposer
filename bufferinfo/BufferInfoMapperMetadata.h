@@ -14,32 +14,23 @@
  * limitations under the License.
  */
 
-#include "BackendRCarDu.h"
+#ifndef PLATFORMIMAGINATION_H
+#define PLATFORMIMAGINATION_H
 
-#include "BackendManager.h"
 #include "bufferinfo/BufferInfoGetter.h"
-#include "drm_fourcc.h"
 
 namespace android {
 
-bool BackendRCarDu::IsClientLayer(DrmHwcTwo::HwcDisplay *display,
-                                  DrmHwcTwo::HwcLayer *layer) {
-  hwc_drm_bo_t bo;
+class BufferInfoMapperMetadata : public BufferInfoGetter {
+ public:
+  using BufferInfoGetter::BufferInfoGetter;
 
-  int ret = BufferInfoGetter::GetInstance()->ConvertBoInfo(layer->buffer(),
-                                                           &bo);
-  if (ret)
-    return true;
+  int ConvertBoInfo(buffer_handle_t handle, hwc_drm_bo_t *bo) override;
 
-  if (bo.format == DRM_FORMAT_ABGR8888)
-    return true;
+  int GetFds(buffer_handle_t handle, hwc_drm_bo_t *bo);
 
-  if (layer->RequireScalingOrPhasing())
-    return true;
-
-  return Backend::IsClientLayer(display, layer);
-}
-
-REGISTER_BACKEND("rcar-du", BackendRCarDu);
-
+  static BufferInfoGetter *CreateInstance();
+};
 }  // namespace android
+
+#endif  // PLATFORMIMAGINATION_H
