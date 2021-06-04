@@ -18,13 +18,15 @@
 
 #include "DrmGenericImporter.h"
 
-#include <cutils/properties.h>
 #include <gralloc_handle.h>
 #include <hardware/gralloc.h>
-#include <inttypes.h>
-#include <log/log.h>
 #include <xf86drm.h>
 #include <xf86drmMode.h>
+
+#include <cinttypes>
+
+#include "utils/log.h"
+#include "utils/properties.h"
 
 namespace android {
 
@@ -34,38 +36,37 @@ DrmGenericImporter::DrmGenericImporter(DrmDevice *drm) : drm_(drm) {
     ALOGE("drmGetCap failed. Fallback to no modifier support.");
     cap_value = 0;
   }
-  has_modifier_support_ = cap_value;
-}
-
-DrmGenericImporter::~DrmGenericImporter() {
+  has_modifier_support_ = cap_value != 0;
 }
 
 int DrmGenericImporter::ImportBuffer(hwc_drm_bo_t *bo) {
-  int ret = drmPrimeFDToHandle(drm_->fd(), bo->prime_fds[0],
-                               &bo->gem_handles[0]);
-  if (ret) {
-    ALOGE("failed to import prime fd %d ret=%d", bo->prime_fds[0], ret);
-    return ret;
-  }
+  int ret = 0;
 
-  for (int i = 1; i < HWC_DRM_BO_MAX_PLANES; i++) {
-    int fd = bo->prime_fds[i];
-    if (fd != 0) {
-      if (fd != bo->prime_fds[0]) {
-        ALOGE("Multiplanar FBs are not supported by this version of composer");
-        return -ENOTSUP;
+  for (int i = 0; i < HWC_DRM_BO_MAX_PLANES; i++) {
+    if (bo->prime_fds[i] > 0) {
+      if (i == 0 || bo->prime_fds[i] != bo->prime_fds[0]) {
+        ret = drmPrimeFDToHandle(drm_->fd(), bo->prime_fds[i],
+                                 &bo->gem_handles[i]);
+        if (ret) {
+          ALOGE("failed to import prime fd %d ret=%d", bo->prime_fds[i], ret);
+          return ret;
+        }
+      } else {
+        bo->gem_handles[i] = bo->gem_handles[0];
       }
-      bo->gem_handles[i] = bo->gem_handles[0];
     }
   }
 
-  if (!has_modifier_support_ && bo->modifiers[0]) {
+  bool has_modifiers = bo->modifiers[0] != DRM_FORMAT_MOD_NONE &&
+                       bo->modifiers[0] != DRM_FORMAT_MOD_INVALID;
+
+  if (!has_modifier_support_ && has_modifiers) {
     ALOGE("No ADDFB2 with modifier support. Can't import modifier %" PRIu64,
           bo->modifiers[0]);
     return -EINVAL;
   }
 
-  if (!bo->with_modifiers)
+  if (!has_modifiers)
     ret = drmModeAddFB2(drm_->fd(), bo->width, bo->height, bo->format,
                         bo->gem_handles, bo->pitches, bo->offsets, &bo->fb_id,
                         0);
@@ -73,15 +74,19 @@ int DrmGenericImporter::ImportBuffer(hwc_drm_bo_t *bo) {
     ret = drmModeAddFB2WithModifiers(drm_->fd(), bo->width, bo->height,
                                      bo->format, bo->gem_handles, bo->pitches,
                                      bo->offsets, bo->modifiers, &bo->fb_id,
-                                     bo->modifiers[0] ? DRM_MODE_FB_MODIFIERS
-                                                      : 0);
+                                     DRM_MODE_FB_MODIFIERS);
 
   if (ret) {
     ALOGE("could not create drm fb %d", ret);
     return ret;
   }
 
-  ImportHandle(bo->gem_handles[0]);
+  for (unsigned int gem_handle : bo->gem_handles) {
+    if (!gem_handle)
+      continue;
+
+    ImportHandle(gem_handle);
+  }
 
   return ret;
 }
@@ -91,18 +96,14 @@ int DrmGenericImporter::ReleaseBuffer(hwc_drm_bo_t *bo) {
     if (drmModeRmFB(drm_->fd(), bo->fb_id))
       ALOGE("Failed to rm fb");
 
-  for (int i = 0; i < HWC_DRM_BO_MAX_PLANES; i++) {
-    if (!bo->gem_handles[i])
+  for (unsigned int &gem_handle : bo->gem_handles) {
+    if (!gem_handle)
       continue;
 
-    if (ReleaseHandle(bo->gem_handles[i])) {
-      ALOGE("Failed to release gem handle %d", bo->gem_handles[i]);
-    } else {
-      for (int j = i + 1; j < HWC_DRM_BO_MAX_PLANES; j++)
-        if (bo->gem_handles[j] == bo->gem_handles[i])
-          bo->gem_handles[j] = 0;
-      bo->gem_handles[i] = 0;
-    }
+    if (ReleaseHandle(gem_handle))
+      ALOGE("Failed to release gem handle %d", gem_handle);
+    else
+      gem_handle = 0;
   }
   return 0;
 }
@@ -123,10 +124,7 @@ int DrmGenericImporter::ReleaseHandle(uint32_t gem_handle) {
 }
 
 int DrmGenericImporter::CloseHandle(uint32_t gem_handle) {
-  struct drm_gem_close gem_close;
-
-  memset(&gem_close, 0, sizeof(gem_close));
-
+  struct drm_gem_close gem_close {};
   gem_close.handle = gem_handle;
   int ret = drmIoctl(drm_->fd(), DRM_IOCTL_GEM_CLOSE, &gem_close);
   if (ret)
