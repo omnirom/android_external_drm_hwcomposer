@@ -112,6 +112,8 @@ static std::vector<DrmConnector *> make_primary_display_candidates(
 }
 
 DrmDevice::DrmDevice() : event_listener_(this) {
+  self.reset(this);
+  mDrmFbImporter = std::make_unique<DrmFbImporter>(self);
 }
 
 DrmDevice::~DrmDevice() {
@@ -120,7 +122,7 @@ DrmDevice::~DrmDevice() {
 
 std::tuple<int, int> DrmDevice::Init(const char *path, int num_displays) {
   /* TODO: Use drmOpenControl here instead */
-  fd_.Set(open(path, O_RDWR | O_CLOEXEC));
+  fd_ = UniqueFd(open(path, O_RDWR | O_CLOEXEC));
   if (fd() < 0) {
     ALOGE("Failed to open dri %s: %s", path, strerror(errno));
     return std::make_tuple(-ENODEV, 0);
@@ -145,6 +147,13 @@ std::tuple<int, int> DrmDevice::Init(const char *path, int num_displays) {
     ret = 0;
   }
 #endif
+
+  uint64_t cap_value = 0;
+  if (drmGetCap(fd(), DRM_CAP_ADDFB2_MODIFIERS, &cap_value)) {
+    ALOGW("drmGetCap failed. Fallback to no modifier support.");
+    cap_value = 0;
+  }
+  HasAddFb2ModifiersSupport_ = cap_value != 0;
 
   drmSetMaster(fd());
   if (!drmIsMaster(fd())) {
@@ -576,9 +585,9 @@ int DrmDevice::GetConnectorProperty(const DrmConnector &connector,
 }
 
 std::string DrmDevice::GetName() const {
-  auto *ver = drmGetVersion(fd_.get());
+  auto *ver = drmGetVersion(fd());
   if (!ver) {
-    ALOGW("Failed to get drm version for fd=%d", fd_.get());
+    ALOGW("Failed to get drm version for fd=%d", fd());
     return "generic";
   }
 
