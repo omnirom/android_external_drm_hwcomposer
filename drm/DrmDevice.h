@@ -26,9 +26,14 @@
 #include "DrmCrtc.h"
 #include "DrmEncoder.h"
 #include "DrmEventListener.h"
+#include "DrmFbImporter.h"
 #include "DrmPlane.h"
+#include "utils/UniqueFd.h"
 
 namespace android {
+
+class DrmFbImporter;
+class DrmPlane;
 
 class DrmDevice {
  public:
@@ -38,7 +43,7 @@ class DrmDevice {
   std::tuple<int, int> Init(const char *path, int num_displays);
 
   int fd() const {
-    return fd_.get();
+    return fd_.Get();
   }
 
   const std::vector<std::unique_ptr<DrmConnector>> &connectors() const {
@@ -83,6 +88,14 @@ class DrmDevice {
     event_listener_.RegisterHotplugHandler(handler);
   }
 
+  bool HasAddFb2ModifiersSupport() const {
+    return HasAddFb2ModifiersSupport_;
+  }
+
+  DrmFbImporter &GetDrmFbImporter() {
+    return *mDrmFbImporter.get();
+  }
+
  private:
   int TryEncoderForDisplay(int display, DrmEncoder *enc);
   int GetProperty(uint32_t obj_id, uint32_t obj_type, const char *prop_name,
@@ -104,6 +117,12 @@ class DrmDevice {
   std::pair<uint32_t, uint32_t> min_resolution_;
   std::pair<uint32_t, uint32_t> max_resolution_;
   std::map<int, int> displays_;
+
+  bool HasAddFb2ModifiersSupport_{};
+
+  std::shared_ptr<DrmDevice> self;
+
+  std::unique_ptr<DrmFbImporter> mDrmFbImporter;
 };
 }  // namespace android
 
