@@ -19,9 +19,11 @@
 
 #include "DrmHwcTwo.h"
 
+#include <fcntl.h>
 #include <hardware/hardware.h>
 #include <hardware/hwcomposer2.h>
 #include <sync/sync.h>
+#include <unistd.h>
 
 #include <cinttypes>
 #include <iostream>
@@ -47,14 +49,13 @@ DrmHwcTwo::DrmHwcTwo() : hwc2_device() {
 HWC2::Error DrmHwcTwo::CreateDisplay(hwc2_display_t displ,
                                      HWC2::DisplayType type) {
   DrmDevice *drm = resource_manager_.GetDrmDevice(displ);
-  std::shared_ptr<Importer> importer = resource_manager_.GetImporter(displ);
-  if (!drm || !importer) {
-    ALOGE("Failed to get a valid drmresource and importer");
+  if (!drm) {
+    ALOGE("Failed to get a valid drmresource");
     return HWC2::Error::NoResources;
   }
   displays_.emplace(std::piecewise_construct, std::forward_as_tuple(displ),
-                    std::forward_as_tuple(&resource_manager_, drm, importer,
-                                          displ, type));
+                    std::forward_as_tuple(&resource_manager_, drm, displ,
+                                          type));
 
   DrmCrtc *crtc = drm->GetCrtcForDisplay(static_cast<int>(displ));
   if (!crtc) {
@@ -209,12 +210,10 @@ HWC2::Error DrmHwcTwo::RegisterCallback(int32_t descriptor,
 }
 
 DrmHwcTwo::HwcDisplay::HwcDisplay(ResourceManager *resource_manager,
-                                  DrmDevice *drm,
-                                  std::shared_ptr<Importer> importer,
-                                  hwc2_display_t handle, HWC2::DisplayType type)
+                                  DrmDevice *drm, hwc2_display_t handle,
+                                  HWC2::DisplayType type)
     : resource_manager_(resource_manager),
       drm_(drm),
-      importer_(std::move(importer)),
       handle_(handle),
       type_(type),
       color_transform_hint_(HAL_COLOR_TRANSFORM_IDENTITY) {
@@ -583,6 +582,9 @@ HWC2::Error DrmHwcTwo::HwcDisplay::GetHdrCapabilities(
   return HWC2::Error::None;
 }
 
+/* Find API details at:
+ * https://cs.android.com/android/platform/superproject/+/android-11.0.0_r3:hardware/libhardware/include/hardware/hwcomposer2.h;l=1767
+ */
 HWC2::Error DrmHwcTwo::HwcDisplay::GetReleaseFences(uint32_t *num_elements,
                                                     hwc2_layer_t *layers,
                                                     int32_t *fences) {
@@ -600,22 +602,22 @@ HWC2::Error DrmHwcTwo::HwcDisplay::GetReleaseFences(uint32_t *num_elements,
     }
 
     layers[num_layers - 1] = l.first;
-    fences[num_layers - 1] = l.second.take_release_fence();
+    fences[num_layers - 1] = l.second.release_fence_.Release();
   }
   *num_elements = num_layers;
   return HWC2::Error::None;
 }
 
-void DrmHwcTwo::HwcDisplay::AddFenceToPresentFence(int fd) {
-  if (fd < 0)
+void DrmHwcTwo::HwcDisplay::AddFenceToPresentFence(UniqueFd fd) {
+  if (!fd) {
     return;
+  }
 
-  if (present_fence_.get() >= 0) {
-    int old_fence = present_fence_.get();
-    present_fence_.Set(sync_merge("dc_present", old_fence, fd));
-    close(fd);
+  if (present_fence_) {
+    present_fence_ = UniqueFd(
+        sync_merge("dc_present", present_fence_.Get(), fd.Get()));
   } else {
-    present_fence_.Set(fd);
+    present_fence_ = std::move(fd);
   }
 }
 
@@ -650,7 +652,7 @@ HWC2::Error DrmHwcTwo::HwcDisplay::CreateComposition(bool test) {
   for (std::pair<const uint32_t, DrmHwcTwo::HwcLayer *> &l : z_map) {
     DrmHwcLayer layer;
     l.second->PopulateDrmLayer(&layer);
-    int ret = layer.ImportBuffer(importer_.get());
+    int ret = layer.ImportBuffer(drm_);
     if (ret) {
       ALOGE("Failed to import layer, ret=%d", ret);
       return HWC2::Error::NoResources;
@@ -673,7 +675,7 @@ HWC2::Error DrmHwcTwo::HwcDisplay::CreateComposition(bool test) {
   std::vector<DrmPlane *> overlay_planes(overlay_planes_);
   ret = composition->Plan(&primary_planes, &overlay_planes);
   if (ret) {
-    ALOGE("Failed to plan the composition ret=%d", ret);
+    ALOGV("Failed to plan the composition ret=%d", ret);
     return HWC2::Error::BadConfig;
   }
 
@@ -701,6 +703,9 @@ HWC2::Error DrmHwcTwo::HwcDisplay::CreateComposition(bool test) {
   return HWC2::Error::None;
 }
 
+/* Find API details at:
+ * https://cs.android.com/android/platform/superproject/+/android-11.0.0_r3:hardware/libhardware/include/hardware/hwcomposer2.h;l=1805
+ */
 HWC2::Error DrmHwcTwo::HwcDisplay::PresentDisplay(int32_t *present_fence) {
   supported(__func__);
   HWC2::Error ret;
@@ -761,15 +766,17 @@ HWC2::Error DrmHwcTwo::HwcDisplay::SetActiveConfig(hwc2_config_t config) {
   return HWC2::Error::None;
 }
 
+/* Find API details at:
+ * https://cs.android.com/android/platform/superproject/+/android-11.0.0_r3:hardware/libhardware/include/hardware/hwcomposer2.h;l=1861
+ */
 HWC2::Error DrmHwcTwo::HwcDisplay::SetClientTarget(buffer_handle_t target,
                                                    int32_t acquire_fence,
                                                    int32_t dataspace,
                                                    hwc_region_t /*damage*/) {
   supported(__func__);
-  UniqueFd uf(acquire_fence);
 
   client_layer_.set_buffer(target);
-  client_layer_.set_acquire_fence(uf.get());
+  client_layer_.acquire_fence_ = UniqueFd(acquire_fence);
   client_layer_.SetLayerDataspace(dataspace);
 
   /* TODO: Do not update source_crop every call.
@@ -1047,13 +1054,15 @@ HWC2::Error DrmHwcTwo::HwcLayer::SetLayerBlendMode(int32_t mode) {
   return HWC2::Error::None;
 }
 
+/* Find API details at:
+ * https://cs.android.com/android/platform/superproject/+/android-11.0.0_r3:hardware/libhardware/include/hardware/hwcomposer2.h;l=2314
+ */
 HWC2::Error DrmHwcTwo::HwcLayer::SetLayerBuffer(buffer_handle_t buffer,
                                                 int32_t acquire_fence) {
   supported(__func__);
-  UniqueFd uf(acquire_fence);
 
   set_buffer(buffer);
-  set_acquire_fence(uf.get());
+  acquire_fence_ = UniqueFd(acquire_fence);
   return HWC2::Error::None;
 }
 
@@ -1144,11 +1153,9 @@ void DrmHwcTwo::HwcLayer::PopulateDrmLayer(DrmHwcLayer *layer) {
       break;
   }
 
-  OutputFd release_fence = release_fence_output();
-
   layer->sf_handle = buffer_;
-  layer->acquire_fence = acquire_fence_.Release();
-  layer->release_fence = std::move(release_fence);
+  // TODO(rsglobal): Avoid extra fd duplication
+  layer->acquire_fence = UniqueFd(fcntl(acquire_fence_.Get(), F_DUPFD_CLOEXEC));
   layer->display_frame = display_frame_;
   layer->alpha = lround(65535.0F * alpha_);
   layer->source_crop = source_crop_;
