@@ -25,7 +25,6 @@
 
 #include "compositor/DrmDisplayCompositor.h"
 #include "compositor/Planner.h"
-#include "drm/DrmGenericImporter.h"
 #include "drm/ResourceManager.h"
 #include "drm/VSyncWorker.h"
 #include "drmhwcomposer.h"
@@ -83,27 +82,6 @@ class DrmHwcTwo : public hwc2_device_t {
       buffer_ = buffer;
     }
 
-    int take_acquire_fence() {
-      return acquire_fence_.Release();
-    }
-    void set_acquire_fence(int acquire_fence) {
-      acquire_fence_.Set(dup(acquire_fence));
-    }
-
-    int release_fence() {
-      return release_fence_.get();
-    }
-    int take_release_fence() {
-      return release_fence_.Release();
-    }
-    void manage_release_fence() {
-      release_fence_.Set(release_fence_raw_);
-      release_fence_raw_ = -1;
-    }
-    OutputFd release_fence_output() {
-      return OutputFd(&release_fence_raw_);
-    }
-
     hwc_rect_t display_frame() {
       return display_frame_;
     }
@@ -139,6 +117,16 @@ class DrmHwcTwo : public hwc2_device_t {
     HWC2::Error SetLayerVisibleRegion(hwc_region_t visible);
     HWC2::Error SetLayerZOrder(uint32_t order);
 
+    UniqueFd acquire_fence_;
+
+    /*
+     * Release fence is not used.
+     * There is no release fence support available in the DRM/KMS. In case no
+     * release fence provided application will use this buffer for writing when
+     * the next frame present fence is signaled.
+     */
+    UniqueFd release_fence_;
+
    private:
     // sf_type_ stores the initial type given to us by surfaceflinger,
     // validated_type_ stores the type after running ValidateDisplay
@@ -147,9 +135,6 @@ class DrmHwcTwo : public hwc2_device_t {
 
     HWC2::BlendMode blending_ = HWC2::BlendMode::None;
     buffer_handle_t buffer_ = NULL;
-    UniqueFd acquire_fence_;
-    int release_fence_raw_ = -1;
-    UniqueFd release_fence_;
     hwc_rect_t display_frame_;
     float alpha_ = 1.0f;
     hwc_frect_t source_crop_;
@@ -164,8 +149,7 @@ class DrmHwcTwo : public hwc2_device_t {
   class HwcDisplay {
    public:
     HwcDisplay(ResourceManager *resource_manager, DrmDevice *drm,
-               std::shared_ptr<Importer> importer, hwc2_display_t handle,
-               HWC2::DisplayType type);
+               hwc2_display_t handle, HWC2::DisplayType type);
     HwcDisplay(const HwcDisplay &) = delete;
     HWC2::Error Init(std::vector<DrmPlane *> *planes);
 
@@ -305,10 +289,6 @@ class DrmHwcTwo : public hwc2_device_t {
       return connector_;
     }
 
-    const std::shared_ptr<Importer> &importer() const {
-      return importer_;
-    }
-
     ResourceManager *resource_manager() const {
       return resource_manager_;
     }
@@ -322,14 +302,13 @@ class DrmHwcTwo : public hwc2_device_t {
     }
 
    private:
-    void AddFenceToPresentFence(int fd);
+    void AddFenceToPresentFence(UniqueFd fd);
 
     constexpr static size_t MATRIX_SIZE = 16;
 
     ResourceManager *resource_manager_;
     DrmDevice *drm_;
     DrmDisplayCompositor compositor_;
-    std::shared_ptr<Importer> importer_;
     std::unique_ptr<Planner> planner_;
 
     std::vector<DrmPlane *> primary_planes_;
