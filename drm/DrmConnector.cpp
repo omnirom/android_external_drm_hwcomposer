@@ -203,6 +203,25 @@ int DrmConnector::UpdateModes() {
               (rate && uint32_t(m.v_refresh()) != rate))
           continue;
       }
+      bool added = false;
+      // already a matching one added
+      for (const DrmMode &mode : new_modes) {
+        if (m.h_display() == mode.h_display() &&
+            m.v_display() == mode.v_display()) {
+          if (rate) {
+            if (m.v_refresh() == mode.v_refresh()) {
+              added = true;
+            }
+          } else {
+            // first one of xres x yres wins
+            added = true;
+          }
+          break;
+        }
+      }
+      if (added) {
+        continue;
+      }
       m.set_id(drm_->next_mode_id());
       new_modes.push_back(m);
       ALOGD("add new mode %dx%d@%.1f id %d for display %d", m.h_display(), m.v_display(), m.v_refresh(), m.id(), display_);
@@ -212,6 +231,15 @@ int DrmConnector::UpdateModes() {
         (new_modes.back().type() & DRM_MODE_TYPE_PREFERRED)) {
       preferred_mode_id_ = new_modes.back().id();
       preferred_mode_found = true;
+    }
+  }
+  // fallback to add all as defaukt would be
+  if (xres && yres && !new_modes.size()) {
+    ALOGD("No matching config for forced %dx%d@%d found - adding all", xres, yres, rate);
+    for (int i = 0; i < c->count_modes; ++i) {
+      DrmMode m(&c->modes[i]);
+      m.set_id(drm_->next_mode_id());
+      new_modes.push_back(m);
     }
   }
   modes_.swap(new_modes);
