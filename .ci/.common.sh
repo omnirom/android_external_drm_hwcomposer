@@ -4,7 +4,7 @@ CLANG="clang++-12"
 CLANG_TIDY="clang-tidy-12"
 
 CXXARGS="-fPIC -Wall -Werror -DPLATFORM_SDK_VERSION=30 -D__ANDROID_API__=30 -Wsign-promo -Wimplicit-fallthrough"
-CXXARGS+=" -D_LIBCPP_ENABLE_THREAD_SAFETY_ANNOTATIONS -Wno-gnu-include-next "
+CXXARGS+=" -D_LIBCPP_ENABLE_THREAD_SAFETY_ANNOTATIONS -Wno-gnu-include-next -Wsign-compare"
 CXXARGS+=" -fvisibility-inlines-hidden -std=gnu++17 -DHWC2_USE_CPP11 -DHWC2_INCLUDE_STRINGIFICATION -fno-rtti"
 
 BUILD_FILES=(
@@ -27,13 +27,13 @@ drm/DrmConnector.cpp
 drm/DrmCrtc.cpp
 drm/DrmDevice.cpp
 drm/DrmEncoder.cpp
-drm/DrmEventListener.cpp
 drm/DrmFbImporter.cpp
 drm/DrmMode.cpp
 drm/DrmPlane.cpp
 drm/DrmProperty.cpp
 DrmHwcTwo.cpp
 drm/ResourceManager.cpp
+drm/UEventListener.cpp
 drm/VSyncWorker.cpp
 tests/worker_test.cpp
 utils/autolock.cpp
