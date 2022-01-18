@@ -200,28 +200,28 @@ int DrmConnector::UpdateModes() {
     if (!exists) {
       DrmMode m(&c->modes[i]);
       if (xres && yres) {
-        if (m.h_display() != xres || m.v_display() != yres ||
-              (rate && m.v_refresh() != rate))
+        if (m.h_display() != xres || m.v_display() != yres)
           continue;
-      }
-      bool added = false;
-      // already a matching one added
-      for (const DrmMode &mode : new_modes) {
-        if (m.h_display() == mode.h_display() &&
-            m.v_display() == mode.v_display()) {
-          if (rate) {
-            if (m.v_refresh() == mode.v_refresh()) {
+
+        bool added = false;
+        // already a matching one added
+        for (const DrmMode &mode : new_modes) {
+          if (m.h_display() == mode.h_display() &&
+              m.v_display() == mode.v_display()) {
+            if (rate != 0) {
+              if (m.v_refresh() == mode.v_refresh()) {
+                added = true;
+              }
+            } else {
+              // first one of xres x yres wins
               added = true;
             }
-          } else {
-            // first one of xres x yres wins
-            added = true;
+            break;
           }
-          break;
         }
-      }
-      if (added) {
-        continue;
+        if (added) {
+          continue;
+        }
       }
       m.set_id(drm_->next_mode_id());
       new_modes.push_back(m);
@@ -234,16 +234,7 @@ int DrmConnector::UpdateModes() {
       preferred_mode_found = true;
     }
   }
-  // fallback to add all as default would be
-  if (xres && yres && !new_modes.size()) {
-    ALOGD("No matching config for forced %dx%d@%.1f found - adding all", xres, yres, rate);
-    for (int i = 0; i < c->count_modes; ++i) {
-      DrmMode m(&c->modes[i]);
-      m.set_id(drm_->next_mode_id());
-      new_modes.push_back(m);
-      ALOGD("add new mode %dx%d@%.1f id %d for display %d", m.h_display(), m.v_display(), m.v_refresh(), m.id(), display_);
-    }
-  }
+
   modes_.swap(new_modes);
   if (!preferred_mode_found && modes_.size() != 0) {
     preferred_mode_id_ = modes_[0].id();
