@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2016 The Android Open Source Project
+ * Copyright (C) 2022 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,35 +14,39 @@
  * limitations under the License.
  */
 
-#ifndef ANDROID_UEVENT_LISTENER_H_
-#define ANDROID_UEVENT_LISTENER_H_
+#ifndef ANDROID_HWC2_DEVICE_HWC_DISPLAY_CONFIGS_H
+#define ANDROID_HWC2_DEVICE_HWC_DISPLAY_CONFIGS_H
 
-#include <functional>
+#include <hardware/hwcomposer2.h>
 
-#include "utils/UniqueFd.h"
-#include "utils/Worker.h"
+#include <map>
+
+#include "drm/DrmMode.h"
 
 namespace android {
 
-class UEventListener : public Worker {
- public:
-  UEventListener();
-  ~UEventListener() override = default;
+class DrmConnector;
 
-  int Init();
+struct HwcDisplayConfig {
+  int id{};
+  int group_id{};
+  DrmMode mode;
+  bool disabled{};
 
-  void RegisterHotplugHandler(std::function<void()> hotplug_handler) {
-    hotplug_handler_ = std::move(hotplug_handler);
+  bool IsInterlaced() const {
+    return (mode.flags() & DRM_MODE_FLAG_INTERLACE) != 0;
   }
-
- protected:
-  void Routine() override;
-
- private:
-  UniqueFd uevent_fd_;
-
-  std::function<void()> hotplug_handler_;
 };
+
+struct HwcDisplayConfigs {
+  HWC2::Error Update(DrmConnector &conn);
+
+  std::map<int /*config_id*/, struct HwcDisplayConfig> hwc_configs;
+
+  int active_config_id = 0;
+  int preferred_config_id = 0;
+};
+
 }  // namespace android
 
 #endif
