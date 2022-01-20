@@ -30,6 +30,7 @@
 #include <sstream>
 #include <string>
 
+#include "drm/DrmPlane.h"
 #include "utils/log.h"
 #include "utils/properties.h"
 
@@ -116,10 +117,12 @@ DrmDevice::DrmDevice() {
   mDrmFbImporter = std::make_unique<DrmFbImporter>(self);
 }
 
+// NOLINTNEXTLINE (readability-function-cognitive-complexity): Fixme
 std::tuple<int, int> DrmDevice::Init(const char *path, int num_displays) {
   /* TODO: Use drmOpenControl here instead */
   fd_ = UniqueFd(open(path, O_RDWR | O_CLOEXEC));
   if (fd() < 0) {
+    // NOLINTNEXTLINE(concurrency-mt-unsafe): Fixme
     ALOGE("Failed to open dri %s: %s", path, strerror(errno));
     return std::make_tuple(-ENODEV, 0);
   }
@@ -384,14 +387,6 @@ DrmCrtc *DrmDevice::GetCrtcForDisplay(int display) const {
   for (const auto &crtc : crtcs_) {
     if (crtc->display() == display)
       return crtc.get();
-  }
-  return nullptr;
-}
-
-DrmPlane *DrmDevice::GetPlane(uint32_t id) const {
-  for (const auto &plane : planes_) {
-    if (plane->id() == id)
-      return plane.get();
   }
   return nullptr;
 }
