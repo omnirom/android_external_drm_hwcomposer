@@ -117,7 +117,6 @@ filegroup {
         "drm/UEventListener.cpp",
         "drm/VSyncWorker.cpp",
 
-        "utils/autolock.cpp",
         "utils/hwcutils.cpp",
 
         "backend/Backend.cpp",
