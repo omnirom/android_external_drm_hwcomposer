@@ -23,26 +23,57 @@
 #include "drm/DrmConnector.h"
 #include "utils/log.h"
 
+constexpr uint32_t kHeadlessModeDisplayWidthMm = 163;
+constexpr uint32_t kHeadlessModeDisplayHeightMm = 122;
+constexpr uint32_t kHeadlessModeDisplayWidthPx = 1024;
+constexpr uint32_t kHeadlessModeDisplayHeightPx = 768;
+constexpr uint32_t kHeadlessModeDisplayVRefresh = 60;
+
 namespace android {
 
 // NOLINTNEXTLINE (readability-function-cognitive-complexity): Fixme
 HWC2::Error HwcDisplayConfigs::Update(DrmConnector &connector) {
+  /* In case UpdateModes will fail we will still have one mode for headless
+   * mode*/
+  hwc_configs.clear();
+
+  last_config_id++;
+  preferred_config_id = active_config_id = last_config_id;
+  auto headless_drm_mode_info = (drmModeModeInfo){
+      .hdisplay = kHeadlessModeDisplayWidthPx,
+      .vdisplay = kHeadlessModeDisplayHeightPx,
+      .vrefresh = kHeadlessModeDisplayVRefresh,
+      .name = "HEADLESS-MODE",
+  };
+  hwc_configs[active_config_id] = (HwcDisplayConfig){
+      .id = active_config_id,
+      .group_id = 1,
+      .mode = DrmMode(&headless_drm_mode_info),
+  };
+
+  mm_width = kHeadlessModeDisplayWidthMm;
+  mm_height = kHeadlessModeDisplayHeightMm;
+
+  /* Read real configs */
   int ret = connector.UpdateModes();
   if (ret != 0) {
     ALOGE("Failed to update display modes %d", ret);
     return HWC2::Error::BadDisplay;
   }
 
-  hwc_configs.clear();
-  preferred_config_id = 0;
-  int preferred_config_group_id = 0;
-
   if (connector.modes().empty()) {
     ALOGE("No modes reported by KMS");
     return HWC2::Error::BadDisplay;
   }
 
-  int last_config_id = 1;
+  hwc_configs.clear();
+  mm_width = connector.mm_width();
+  mm_height = connector.mm_height();
+
+  preferred_config_id = 0;
+  int preferred_config_group_id = 0;
+
+  int first_config_id = last_config_id;
   int last_group_id = 1;
 
   /* Group modes */
@@ -87,7 +118,7 @@ HWC2::Error HwcDisplayConfigs::Update(DrmConnector &connector) {
   /* We must have preferred mode. Set first mode as preferred
    * in case KMS haven't reported anything. */
   if (preferred_config_id == 0) {
-    preferred_config_id = 1;
+    preferred_config_id = first_config_id;
     preferred_config_group_id = 1;
   }
 
@@ -142,8 +173,8 @@ HWC2::Error HwcDisplayConfigs::Update(DrmConnector &connector) {
    * otherwise android.graphics.cts.SetFrameRateTest CTS will fail
    */
   constexpr float kMinFpsDelta = 1.0;  // FPS
-  for (int m1 = 1; m1 < last_config_id; m1++) {
-    for (int m2 = 1; m2 < last_config_id; m2++) {
+  for (int m1 = first_config_id; m1 < last_config_id; m1++) {
+    for (int m2 = first_config_id; m2 < last_config_id; m2++) {
       if (m1 != m2 && hwc_configs[m1].group_id == hwc_configs[m2].group_id &&
           !hwc_configs[m1].disabled && !hwc_configs[m2].disabled &&
           fabsf(hwc_configs[m1].mode.v_refresh() -
@@ -159,6 +190,8 @@ HWC2::Error HwcDisplayConfigs::Update(DrmConnector &connector) {
     }
   }
 
+  /* Set active mode to be valid mode */
+  active_config_id = preferred_config_id;
   return HWC2::Error::None;
 }
 
