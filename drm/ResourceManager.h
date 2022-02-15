@@ -17,11 +17,11 @@
 #ifndef RESOURCEMANAGER_H
 #define RESOURCEMANAGER_H
 
-#include <string.h>
+#include <cstring>
 
 #include "DrmDevice.h"
-#include "UEventListener.h"
 #include "DrmFbImporter.h"
+#include "UEventListener.h"
 
 namespace android {
 
@@ -30,24 +30,26 @@ class ResourceManager {
   ResourceManager();
   ResourceManager(const ResourceManager &) = delete;
   ResourceManager &operator=(const ResourceManager &) = delete;
-  ~ResourceManager() {
-    uevent_listener_.Exit();
-  }
+  ~ResourceManager();
 
   int Init();
   DrmDevice *GetDrmDevice(int display);
-  const std::vector<std::unique_ptr<DrmDevice>> &getDrmDevices() const {
+  const std::vector<std::unique_ptr<DrmDevice>> &GetDrmDevices() const {
     return drms_;
   }
-  int getDisplayCount() const {
+  int GetDisplayCount() const {
     return num_displays_;
   }
-  bool ForcedScalingWithGpu() {
+  bool ForcedScalingWithGpu() const {
     return scale_with_gpu_;
   }
 
   UEventListener *GetUEventListener() {
     return &uevent_listener_;
+  }
+
+  auto &GetMainLock() {
+    return main_lock_;
   }
 
  private:
@@ -59,6 +61,8 @@ class ResourceManager {
   bool scale_with_gpu_{};
 
   UEventListener uevent_listener_;
+
+  std::mutex main_lock_;
 };
 }  // namespace android
 

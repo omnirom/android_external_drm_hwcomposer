@@ -23,11 +23,11 @@
 
 #include <functional>
 #include <memory>
+#include <optional>
 #include <sstream>
 #include <tuple>
 
 #include "DrmDisplayComposition.h"
-#include "Planner.h"
 #include "drm/ResourceManager.h"
 #include "drm/VSyncWorker.h"
 #include "drmhwcomposer.h"
@@ -58,23 +58,37 @@ class DrmDisplayCompositor {
   ~DrmDisplayCompositor() = default;
   auto Init(ResourceManager *resource_manager, int display) -> int;
 
-  std::unique_ptr<DrmDisplayComposition> CreateInitializedComposition() const;
-
   auto ExecuteAtomicCommit(AtomicCommitArgs &args) -> int;
 
- private:
   DrmDisplayCompositor(const DrmDisplayCompositor &) = delete;
 
+  auto ActivateDisplayUsingDPMS() -> int;
+
+ private:
   auto CommitFrame(AtomicCommitArgs &args) -> int;
 
-  struct {
-    std::shared_ptr<DrmDisplayComposition> composition;
+  struct KmsState {
+    /* Required to cleanup unused planes */
+    std::vector<DrmPlane *> used_planes;
+    /* We have to hold a reference to framebuffer while displaying it ,
+     * otherwise picture will blink */
+    std::vector<std::shared_ptr<DrmFbIdHandle>> used_framebuffers;
+
     DrmModeUserPropertyBlobUnique mode_blob;
-    bool active_state{};
-  } active_kms_data;
+
+    /* To avoid setting the inactive state twice, which will fail the commit */
+    bool crtc_active_state{};
+  } active_frame_state_;
+
+  auto NewFrameState() -> KmsState {
+    return (KmsState){
+        .used_planes = active_frame_state_.used_planes,
+        .used_framebuffers = active_frame_state_.used_framebuffers,
+        .crtc_active_state = active_frame_state_.crtc_active_state,
+    };
+  }
 
   ResourceManager *resource_manager_ = nullptr;
-  std::unique_ptr<Planner> planner_;
   bool initialized_{};
   int display_ = -1;
 };

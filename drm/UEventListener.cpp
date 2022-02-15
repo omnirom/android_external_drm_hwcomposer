@@ -40,6 +40,7 @@ int UEventListener::Init() {
   uevent_fd_ = UniqueFd(
       socket(PF_NETLINK, SOCK_DGRAM | SOCK_CLOEXEC, NETLINK_KOBJECT_UEVENT));
   if (!uevent_fd_) {
+    // NOLINTNEXTLINE(concurrency-mt-unsafe): Fixme
     ALOGE("Failed to open uevent socket: %s", strerror(errno));
     return -errno;
   }
@@ -51,6 +52,7 @@ int UEventListener::Init() {
 
   int ret = bind(uevent_fd_.Get(), (struct sockaddr *)&addr, sizeof(addr));
   if (ret) {
+    // NOLINTNEXTLINE(concurrency-mt-unsafe): Fixme
     ALOGE("Failed to bind uevent socket: %s", strerror(errno));
     return -errno;
   }
@@ -88,6 +90,10 @@ void UEventListener::Routine() {
     }
 
     if (drm_event && hotplug_event && hotplug_handler_) {
+      constexpr useconds_t delay_after_uevent_us = 200000;
+      /* We need some delay to ensure DrmConnector::UpdateModes() will query
+       * correct modes list, otherwise at least RPI4 board may report 0 modes */
+      usleep(delay_after_uevent_us);
       hotplug_handler_();
     }
   }

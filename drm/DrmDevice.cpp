@@ -30,6 +30,7 @@
 #include <sstream>
 #include <string>
 
+#include "drm/DrmPlane.h"
 #include "utils/log.h"
 #include "utils/properties.h"
 
@@ -116,10 +117,12 @@ DrmDevice::DrmDevice() {
   mDrmFbImporter = std::make_unique<DrmFbImporter>(self);
 }
 
+// NOLINTNEXTLINE (readability-function-cognitive-complexity): Fixme
 std::tuple<int, int> DrmDevice::Init(const char *path, int num_displays) {
   /* TODO: Use drmOpenControl here instead */
   fd_ = UniqueFd(open(path, O_RDWR | O_CLOEXEC));
   if (fd() < 0) {
+    // NOLINTNEXTLINE(concurrency-mt-unsafe): Fixme
     ALOGE("Failed to open dri %s: %s", path, strerror(errno));
     return std::make_tuple(-ENODEV, 0);
   }
@@ -328,9 +331,6 @@ std::tuple<int, int> DrmDevice::Init(const char *path, int num_displays) {
       ALOGE("Failed CreateDisplayPipe %d with %d", conn->id(), ret);
       return std::make_tuple(ret, 0);
     }
-    if (!AttachWriteback(conn.get())) {
-      ALOGI("Display %d has writeback attach to it", conn->display());
-    }
   }
   return std::make_tuple(ret, displays_.size());
 }
@@ -347,51 +347,10 @@ DrmConnector *DrmDevice::GetConnectorForDisplay(int display) const {
   return nullptr;
 }
 
-DrmConnector *DrmDevice::GetWritebackConnectorForDisplay(int display) const {
-  for (const auto &conn : writeback_connectors_) {
-    if (conn->display() == display)
-      return conn.get();
-  }
-  return nullptr;
-}
-
-// TODO(nobody): what happens when hotplugging
-DrmConnector *DrmDevice::AvailableWritebackConnector(int display) const {
-  DrmConnector *writeback_conn = GetWritebackConnectorForDisplay(display);
-  DrmConnector *display_conn = GetConnectorForDisplay(display);
-  // If we have a writeback already attached to the same CRTC just use that,
-  // if possible.
-  if (display_conn && writeback_conn &&
-      writeback_conn->encoder()->CanClone(display_conn->encoder()))
-    return writeback_conn;
-
-  // Use another CRTC if available and doesn't have any connector
-  for (const auto &crtc : crtcs_) {
-    if (crtc->display() == display)
-      continue;
-    display_conn = GetConnectorForDisplay(crtc->display());
-    // If we have a display connected don't use it for writeback
-    if (display_conn && display_conn->state() == DRM_MODE_CONNECTED)
-      continue;
-    writeback_conn = GetWritebackConnectorForDisplay(crtc->display());
-    if (writeback_conn)
-      return writeback_conn;
-  }
-  return nullptr;
-}
-
 DrmCrtc *DrmDevice::GetCrtcForDisplay(int display) const {
   for (const auto &crtc : crtcs_) {
     if (crtc->display() == display)
       return crtc.get();
-  }
-  return nullptr;
-}
-
-DrmPlane *DrmDevice::GetPlane(uint32_t id) const {
-  for (const auto &plane : planes_) {
-    if (plane->id() == id)
-      return plane.get();
   }
   return nullptr;
 }
@@ -462,34 +421,6 @@ int DrmDevice::CreateDisplayPipe(DrmConnector *connector) {
   return -ENODEV;
 }
 
-// Attach writeback connector to the CRTC linked to the display_conn
-int DrmDevice::AttachWriteback(DrmConnector *display_conn) {
-  DrmCrtc *display_crtc = display_conn->encoder()->crtc();
-  if (GetWritebackConnectorForDisplay(display_crtc->display()) != nullptr) {
-    ALOGE("Display already has writeback attach to it");
-    return -EINVAL;
-  }
-  for (auto &writeback_conn : writeback_connectors_) {
-    if (writeback_conn->display() >= 0)
-      continue;
-    for (DrmEncoder *writeback_enc : writeback_conn->possible_encoders()) {
-      for (DrmCrtc *possible_crtc : writeback_enc->possible_crtcs()) {
-        if (possible_crtc != display_crtc)
-          continue;
-        // Use just encoders which had not been bound already
-        if (writeback_enc->can_bind(display_crtc->display())) {
-          writeback_enc->set_crtc(display_crtc);
-          writeback_conn->set_encoder(writeback_enc);
-          writeback_conn->set_display(display_crtc->display());
-          writeback_conn->UpdateModes();
-          return 0;
-        }
-      }
-    }
-  }
-  return -EINVAL;
-}
-
 auto DrmDevice::RegisterUserPropertyBlob(void *data, size_t length) const
     -> DrmModeUserPropertyBlobUnique {
   struct drm_mode_create_blob create_blob {};
@@ -499,7 +430,7 @@ auto DrmDevice::RegisterUserPropertyBlob(void *data, size_t length) const
   int ret = drmIoctl(fd(), DRM_IOCTL_MODE_CREATEPROPBLOB, &create_blob);
   if (ret) {
     ALOGE("Failed to create mode property blob %d", ret);
-    return DrmModeUserPropertyBlobUnique();
+    return {};
   }
 
   return DrmModeUserPropertyBlobUnique(

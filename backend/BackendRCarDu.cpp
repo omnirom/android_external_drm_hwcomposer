@@ -22,13 +22,12 @@
 
 namespace android {
 
-bool BackendRCarDu::IsClientLayer(DrmHwcTwo::HwcDisplay *display,
-                                  DrmHwcTwo::HwcLayer *layer) {
+bool BackendRCarDu::IsClientLayer(HwcDisplay *display, HwcLayer *layer) {
   hwc_drm_bo_t bo;
 
-  int ret = BufferInfoGetter::GetInstance()->ConvertBoInfo(layer->buffer(),
+  int ret = BufferInfoGetter::GetInstance()->ConvertBoInfo(layer->GetBuffer(),
                                                            &bo);
-  if (ret)
+  if (ret != 0)
     return true;
 
   if (bo.format == DRM_FORMAT_ABGR8888)
