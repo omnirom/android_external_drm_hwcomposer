@@ -31,10 +31,10 @@ constexpr uint32_t kHeadlessModeDisplayVRefresh = 60;
 
 namespace android {
 
-// NOLINTNEXTLINE (readability-function-cognitive-complexity): Fixme
-HWC2::Error HwcDisplayConfigs::Update(DrmConnector &connector) {
-  /* In case UpdateModes will fail we will still have one mode for headless
-   * mode*/
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
+uint32_t HwcDisplayConfigs::last_config_id = 1;
+
+void HwcDisplayConfigs::FillHeadless() {
   hwc_configs.clear();
 
   last_config_id++;
@@ -53,7 +53,13 @@ HWC2::Error HwcDisplayConfigs::Update(DrmConnector &connector) {
 
   mm_width = kHeadlessModeDisplayWidthMm;
   mm_height = kHeadlessModeDisplayHeightMm;
+}
 
+// NOLINTNEXTLINE (readability-function-cognitive-complexity): Fixme
+HWC2::Error HwcDisplayConfigs::Update(DrmConnector &connector) {
+  /* In case UpdateModes will fail we will still have one mode for headless
+   * mode*/
+  FillHeadless();
   /* Read real configs */
   int ret = connector.UpdateModes();
   if (ret != 0) {
@@ -61,25 +67,25 @@ HWC2::Error HwcDisplayConfigs::Update(DrmConnector &connector) {
     return HWC2::Error::BadDisplay;
   }
 
-  if (connector.modes().empty()) {
+  if (connector.GetModes().empty()) {
     ALOGE("No modes reported by KMS");
     return HWC2::Error::BadDisplay;
   }
 
   hwc_configs.clear();
-  mm_width = connector.mm_width();
-  mm_height = connector.mm_height();
+  mm_width = connector.GetMmWidth();
+  mm_height = connector.GetMmHeight();
 
   preferred_config_id = 0;
-  int preferred_config_group_id = 0;
+  uint32_t preferred_config_group_id = 0;
 
-  int first_config_id = last_config_id;
-  int last_group_id = 1;
+  uint32_t first_config_id = last_config_id;
+  uint32_t last_group_id = 1;
 
   /* Group modes */
-  for (const auto &mode : connector.modes()) {
+  for (const auto &mode : connector.GetModes()) {
     /* Find group for the new mode or create new group */
-    int group_found = 0;
+    uint32_t group_found = 0;
     for (auto &hwc_config : hwc_configs) {
       if (mode.h_display() == hwc_config.second.mode.h_display() &&
           mode.v_display() == hwc_config.second.mode.v_display()) {
@@ -122,7 +128,7 @@ HWC2::Error HwcDisplayConfigs::Update(DrmConnector &connector) {
     preferred_config_group_id = 1;
   }
 
-  for (int group = 1; group < last_group_id; group++) {
+  for (uint32_t group = 1; group < last_group_id; group++) {
     bool has_interlaced = false;
     bool has_progressive = false;
     for (auto &hwc_config : hwc_configs) {
@@ -173,8 +179,8 @@ HWC2::Error HwcDisplayConfigs::Update(DrmConnector &connector) {
    * otherwise android.graphics.cts.SetFrameRateTest CTS will fail
    */
   constexpr float kMinFpsDelta = 1.0;  // FPS
-  for (int m1 = first_config_id; m1 < last_config_id; m1++) {
-    for (int m2 = first_config_id; m2 < last_config_id; m2++) {
+  for (uint32_t m1 = first_config_id; m1 < last_config_id; m1++) {
+    for (uint32_t m2 = first_config_id; m2 < last_config_id; m2++) {
       if (m1 != m2 && hwc_configs[m1].group_id == hwc_configs[m2].group_id &&
           !hwc_configs[m1].disabled && !hwc_configs[m2].disabled &&
           fabsf(hwc_configs[m1].mode.v_refresh() -
@@ -190,8 +196,6 @@ HWC2::Error HwcDisplayConfigs::Update(DrmConnector &connector) {
     }
   }
 
-  /* Set active mode to be valid mode */
-  active_config_id = preferred_config_id;
   return HWC2::Error::None;
 }
 
