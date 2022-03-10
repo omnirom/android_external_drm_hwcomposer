@@ -14,11 +14,9 @@
  * limitations under the License.
  */
 
-#ifndef ANDROID_DRM_DISPLAY_COMPOSITOR_H_
-#define ANDROID_DRM_DISPLAY_COMPOSITOR_H_
+#ifndef ANDROID_DRM_ATOMIC_STATE_MANAGER_H_
+#define ANDROID_DRM_ATOMIC_STATE_MANAGER_H_
 
-#include <hardware/hardware.h>
-#include <hardware/hwcomposer.h>
 #include <pthread.h>
 
 #include <functional>
@@ -27,7 +25,8 @@
 #include <sstream>
 #include <tuple>
 
-#include "DrmDisplayComposition.h"
+#include "compositor/DrmKmsPlan.h"
+#include "drm/DrmPlane.h"
 #include "drm/ResourceManager.h"
 #include "drm/VSyncWorker.h"
 #include "drmhwcomposer.h"
@@ -39,29 +38,24 @@ struct AtomicCommitArgs {
   bool test_only = false;
   std::optional<DrmMode> display_mode;
   std::optional<bool> active;
-  std::shared_ptr<DrmDisplayComposition> composition;
-  /* 'clear' should never be used together with 'composition' */
-  bool clear_active_composition = false;
+  std::shared_ptr<DrmKmsPlan> composition;
 
   /* out */
   UniqueFd out_fence;
 
   /* helpers */
   auto HasInputs() -> bool {
-    return display_mode || active || composition || clear_active_composition;
+    return display_mode || active || composition;
   }
 };
 
-class DrmDisplayCompositor {
+class DrmAtomicStateManager {
  public:
-  DrmDisplayCompositor() = default;
-  ~DrmDisplayCompositor() = default;
-  auto Init(ResourceManager *resource_manager, int display) -> int;
+  explicit DrmAtomicStateManager(DrmDisplayPipeline *pipe) : pipe_(pipe){};
+  DrmAtomicStateManager(const DrmAtomicStateManager &) = delete;
+  ~DrmAtomicStateManager() = default;
 
   auto ExecuteAtomicCommit(AtomicCommitArgs &args) -> int;
-
-  DrmDisplayCompositor(const DrmDisplayCompositor &) = delete;
-
   auto ActivateDisplayUsingDPMS() -> int;
 
  private:
@@ -69,7 +63,7 @@ class DrmDisplayCompositor {
 
   struct KmsState {
     /* Required to cleanup unused planes */
-    std::vector<DrmPlane *> used_planes;
+    std::vector<std::shared_ptr<BindingOwner<DrmPlane>>> used_planes;
     /* We have to hold a reference to framebuffer while displaying it ,
      * otherwise picture will blink */
     std::vector<std::shared_ptr<DrmFbIdHandle>> used_framebuffers;
@@ -88,9 +82,7 @@ class DrmDisplayCompositor {
     };
   }
 
-  ResourceManager *resource_manager_ = nullptr;
-  bool initialized_{};
-  int display_ = -1;
+  DrmDisplayPipeline *const pipe_;
 };
 }  // namespace android
 
