@@ -22,7 +22,7 @@
 #include <optional>
 
 #include "HwcDisplayConfigs.h"
-#include "compositor/DrmDisplayCompositor.h"
+#include "drm/DrmAtomicStateManager.h"
 #include "drm/ResourceManager.h"
 #include "drm/VSyncWorker.h"
 #include "drmhwcomposer.h"
@@ -33,12 +33,16 @@ namespace android {
 class Backend;
 class DrmHwcTwo;
 
+inline constexpr uint32_t kPrimaryDisplay = 0;
+
 class HwcDisplay {
  public:
-  HwcDisplay(ResourceManager *resource_manager, DrmDevice *drm,
-             hwc2_display_t handle, HWC2::DisplayType type, DrmHwcTwo *hwc2);
+  HwcDisplay(hwc2_display_t handle, HWC2::DisplayType type, DrmHwcTwo *hwc2);
   HwcDisplay(const HwcDisplay &) = delete;
-  HWC2::Error Init(std::vector<DrmPlane *> *planes);
+  ~HwcDisplay();
+
+  /* SetPipeline should be carefully used only by DrmHwcTwo hotplug handlers */
+  void SetPipeline(DrmDisplayPipeline *pipeline);
 
   HWC2::Error CreateComposition(AtomicCommitArgs &a_args);
   std::vector<HwcLayer *> GetOrderLayersByZPos();
@@ -81,7 +85,6 @@ class HwcDisplay {
 #endif
 #if PLATFORM_SDK_VERSION > 29
   HWC2::Error GetDisplayConnectionType(uint32_t *outType);
-  HWC2::Error GetDisplayVsyncPeriod(hwc2_vsync_period_t *outVsyncPeriod);
 
   HWC2::Error SetActiveConfigWithConstraints(
       hwc2_config_t config,
@@ -94,6 +97,7 @@ class HwcDisplay {
 
   HWC2::Error SetContentType(int32_t contentType);
 #endif
+  HWC2::Error GetDisplayVsyncPeriod(uint32_t *outVsyncPeriod);
 
   HWC2::Error GetDozeSupport(int32_t *support);
   HWC2::Error GetHdrCapabilities(uint32_t *num_types, int32_t *types,
@@ -142,32 +146,16 @@ class HwcDisplay {
   const Backend *backend() const;
   void set_backend(std::unique_ptr<Backend> backend);
 
-  const std::vector<DrmPlane *> &primary_planes() const {
-    return primary_planes_;
-  }
-
-  const std::vector<DrmPlane *> &overlay_planes() const {
-    return overlay_planes_;
+  auto GetHwc2() {
+    return hwc2_;
   }
 
   std::map<hwc2_layer_t, HwcLayer> &layers() {
     return layers_;
   }
 
-  const DrmDisplayCompositor &compositor() const {
-    return compositor_;
-  }
-
-  const DrmDevice *drm() const {
-    return drm_;
-  }
-
-  const DrmConnector *connector() const {
-    return connector_;
-  }
-
-  ResourceManager *resource_manager() const {
-    return resource_manager_;
+  auto &GetPipe() {
+    return *pipeline_;
   }
 
   android_color_transform_t &color_transform_hint() {
@@ -179,26 +167,8 @@ class HwcDisplay {
   }
 
   /* returns true if composition should be sent to client */
-  bool ProcessClientFlatteningState(bool skip) {
-    int flattenning_state = flattenning_state_;
-    if (flattenning_state == ClientFlattenningState::Disabled) {
-      return false;
-    }
-
-    if (skip) {
-      flattenning_state_ = ClientFlattenningState::NotRequired;
-      return false;
-    }
-
-    if (flattenning_state == ClientFlattenningState::ClientRefreshRequested) {
-      flattenning_state_ = ClientFlattenningState::Flattened;
-      return true;
-    }
-
-    flattening_vsync_worker_.VSyncControl(true);
-    flattenning_state_ = ClientFlattenningState::VsyncCountdownMax;
-    return false;
-  }
+  bool ProcessClientFlatteningState(bool skip);
+  void ProcessFlatenningVsyncInternal();
 
   /* Headless mode required to keep SurfaceFlinger alive when all display are
    * disconnected, Without headless mode Android will continuously crash.
@@ -207,7 +177,7 @@ class HwcDisplay {
    * https://source.android.com/devices/graphics/hotplug#handling-common-scenarios
    */
   bool IsInHeadlessMode() {
-    return handle_ == 0 && connector_->state() != DRM_MODE_CONNECTED;
+    return !pipeline_;
   }
 
  private:
@@ -220,41 +190,48 @@ class HwcDisplay {
   };
 
   std::atomic_int flattenning_state_{ClientFlattenningState::NotRequired};
-  VSyncWorker flattening_vsync_worker_;
 
   constexpr static size_t MATRIX_SIZE = 16;
 
   HwcDisplayConfigs configs_;
 
-  DrmHwcTwo *hwc2_;
+  DrmHwcTwo *const hwc2_;
 
-  std::optional<DrmMode> staged_mode;
+  std::optional<DrmMode> staged_mode_;
+  int64_t staged_mode_change_time_{};
+  uint32_t staged_mode_config_id_{};
 
-  ResourceManager *resource_manager_;
-  DrmDevice *drm_;
-  DrmDisplayCompositor compositor_;
-
-  std::vector<DrmPlane *> primary_planes_;
-  std::vector<DrmPlane *> overlay_planes_;
+  DrmDisplayPipeline *pipeline_{};
 
   std::unique_ptr<Backend> backend_;
 
   VSyncWorker vsync_worker_;
-  DrmConnector *connector_ = nullptr;
-  DrmCrtc *crtc_ = nullptr;
-  hwc2_display_t handle_;
+  bool vsync_event_en_{};
+  bool vsync_flattening_en_{};
+  bool vsync_tracking_en_{};
+  int64_t last_vsync_ts_{};
+
+  const hwc2_display_t handle_;
   HWC2::DisplayType type_;
-  uint32_t layer_idx_ = 0;
+
+  uint32_t layer_idx_{};
+
   std::map<hwc2_layer_t, HwcLayer> layers_;
   HwcLayer client_layer_;
   int32_t color_mode_{};
   std::array<float, MATRIX_SIZE> color_transform_matrix_{};
   android_color_transform_t color_transform_hint_;
 
+  std::shared_ptr<DrmKmsPlan> current_plan_;
+
   uint32_t frame_no_ = 0;
   Stats total_stats_;
   Stats prev_stats_;
   std::string DumpDelta(HwcDisplay::Stats delta);
+
+  HWC2::Error Init();
+
+  HWC2::Error SetActiveConfigInternal(uint32_t config, int64_t change_time);
 };
 
 }  // namespace android
