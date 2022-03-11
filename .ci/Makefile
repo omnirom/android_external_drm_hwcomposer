@@ -21,21 +21,11 @@ TIDY_FILES_OVERRIDE := \
     bufferinfo/legacy/BufferInfoMaliMediatek.cpp:COARSE \
     bufferinfo/legacy/BufferInfoMaliMeson.cpp:COARSE    \
     bufferinfo/legacy/BufferInfoMinigbm.cpp:COARSE      \
-    compositor/DrmDisplayComposition.cpp:COARSE         \
-    compositor/DrmDisplayComposition.h:COARSE           \
-    compositor/DrmDisplayCompositor.cpp:COARSE          \
     drm/DrmFbImporter.h:FINE                            \
     drm/DrmMode.h:COARSE                                \
-    drm/DrmDevice.h:COARSE                              \
     drm/DrmProperty.h:COARSE                            \
-    drm/DrmConnector.h:COARSE                           \
-    drm/DrmCrtc.h:COARSE                                \
     drm/DrmUnique.h:FINE                                \
-    drm/DrmEncoder.h:COARSE                             \
-    drm/DrmConnector.cpp:COARSE                         \
-    drm/DrmDevice.cpp:COARSE                            \
     drm/DrmProperty.cpp:COARSE                          \
-    drm/UEventListener.cpp:COARSE                       \
     drm/VSyncWorker.cpp:COARSE                          \
     hwc2_device/DrmHwcTwo.cpp:COARSE                    \
     hwc2_device/DrmHwcTwo.h:COARSE                      \
@@ -94,7 +84,7 @@ clean:
 
 # Build
 
-BUILD_FILES_AUTO := $(shell find -L $(SRC_DIR) -not -path '*/\.*' -not -path '*/tests/*' -path '*.cpp')
+BUILD_FILES_AUTO := $(shell find -L $(SRC_DIR) -not -path '*/\.*' -not -path '*/tests/test_include/*' -path '*.cpp')
 SKIP_FILES_path := $(foreach file,$(SKIP_FILES),$(SRC_DIR)/$(file))
 
 BUILD_FILES := $(subst ./,,$(filter-out $(SKIP_FILES_path),$(BUILD_FILES_AUTO)))
@@ -117,7 +107,7 @@ $(OUT_DIR)/%.d: $(SRC_DIR)/%.cpp
 	$(CLANG) $(CXXARGS) $< -MM -MT $(OUT_DIR)/$(patsubst %.cpp,%.o,$<) -o $@
 
 # TIDY
-TIDY_FILES_AUTO := $(shell find -L $(SRC_DIR) -not -path '*/\.*' -not -path '*/tests/*' \( -path '*.cpp' -o -path '*.h' \))
+TIDY_FILES_AUTO := $(shell find -L $(SRC_DIR) -not -path '*/\.*' -not -path '*/tests/test_include/*' \( -path '*.cpp' -o -path '*.h' \))
 
 TIDY_FILES_AUTO_filtered := $(filter-out $(SKIP_FILES_path),$(TIDY_FILES_AUTO))
 
@@ -154,7 +144,7 @@ $$(_TARG): _TARG := $$(_TARG)
 $$(_TARG): TIDY_ARGS := $$(TIDY_ARGS)
 $$(_TARG): $$(_DEP)
 	mkdir -p $$(dir $$(_TARG))
-	$$(CLANG_TIDY) $$(_DEP) $$(TIDY_ARGS) -- -x c++ $$(CXXARGS)
+	$$(CLANG_TIDY) $$(_DEP) $$(TIDY_ARGS) -- -x c++ $$(CXXARGS) -Wno-pragma-once-outside-header
 	touch $$(_TARG)
 
 endef
