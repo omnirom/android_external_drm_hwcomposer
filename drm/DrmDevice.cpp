@@ -236,13 +236,6 @@ std::tuple<int, int> DrmDevice::Init(const char *path, int num_displays) {
       break;
     }
 
-    ALOGI("Connector id: %d, type: %d", c->connector_id, c->connector_type);
-    if (c->connector_type == DRM_MODE_CONNECTOR_WRITEBACK) {
-      ALOGE("Skipping DRM_MODE_CONNECTOR_WRITEBACK");
-      drmModeFreeConnector(c);
-      continue;
-    }
-
     std::vector<DrmEncoder *> possible_encoders;
     DrmEncoder *current_encoder = nullptr;
     for (int j = 0; j < c->count_encoders; ++j) {
