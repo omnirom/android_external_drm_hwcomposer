@@ -1166,7 +1166,7 @@ void DrmHwcTwo::HwcLayer::PopulateDrmLayer(DrmHwcLayer *layer) {
 void DrmHwcTwo::HandleDisplayHotplug(hwc2_display_t displayid, int state) {
   const std::lock_guard<std::mutex> lock(hotplug_callback_lock);
 
-  if (hotplug_callback_hook_ && hotplug_callback_data_ && state == DRM_MODE_CONNECTED)
+  if (hotplug_callback_hook_ && hotplug_callback_data_)
     hotplug_callback_hook_(hotplug_callback_data_, displayid,
                            state == DRM_MODE_CONNECTED
                                ? HWC2_CONNECTION_CONNECTED
