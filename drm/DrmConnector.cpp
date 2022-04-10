@@ -163,17 +163,16 @@ std::string DrmConnector::name() const {
 
 int DrmConnector::UpdateModes() {
   char value[PROPERTY_VALUE_MAX];
-  uint32_t xres = 0, yres = 0;
-  float rate = 0;
+  uint32_t xres = 0, yres = 0, rate = 0;
   if (property_get("debug.drm.mode.force", value, NULL)) {
     // parse <xres>x<yres>[@<refreshrate>]
-    if (sscanf(value, "%dx%d@%f", &xres, &yres, &rate) != 3) {
+    if (sscanf(value, "%dx%d@%d", &xres, &yres, &rate) != 3) {
       rate = 0;
       if (sscanf(value, "%dx%d", &xres, &yres) != 2) {
         xres = yres = 0;
       }
     }
-    ALOGI_IF(xres && yres, "force mode to %dx%d@%.1f", xres, yres, rate);
+    ALOGI_IF(xres && yres, "force mode to %dx%d@%dHz", xres, yres, rate);
   }
 
   int fd = drm_->fd();
@@ -201,27 +200,8 @@ int DrmConnector::UpdateModes() {
       DrmMode m(&c->modes[i]);
       if (xres && yres) {
         if (m.h_display() != xres || m.v_display() != yres ||
-              (rate && m.v_refresh() != rate))
+              (rate && uint32_t(m.v_refresh()) != rate))
           continue;
-      }
-      bool added = false;
-      // already a matching one added
-      for (const DrmMode &mode : new_modes) {
-        if (m.h_display() == mode.h_display() &&
-            m.v_display() == mode.v_display()) {
-          if (rate) {
-            if (m.v_refresh() == mode.v_refresh()) {
-              added = true;
-            }
-          } else {
-            // first one of xres x yres wins
-            added = true;
-          }
-          break;
-        }
-      }
-      if (added) {
-        continue;
       }
       m.set_id(drm_->next_mode_id());
       new_modes.push_back(m);
@@ -232,16 +212,6 @@ int DrmConnector::UpdateModes() {
         (new_modes.back().type() & DRM_MODE_TYPE_PREFERRED)) {
       preferred_mode_id_ = new_modes.back().id();
       preferred_mode_found = true;
-    }
-  }
-  // fallback to add all as default would be
-  if (xres && yres && !new_modes.size()) {
-    ALOGD("No matching config for forced %dx%d@%.1f found - adding all", xres, yres, rate);
-    for (int i = 0; i < c->count_modes; ++i) {
-      DrmMode m(&c->modes[i]);
-      m.set_id(drm_->next_mode_id());
-      new_modes.push_back(m);
-      ALOGD("add new mode %dx%d@%.1f id %d for display %d", m.h_display(), m.v_display(), m.v_refresh(), m.id(), display_);
     }
   }
   modes_.swap(new_modes);
