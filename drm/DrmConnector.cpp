@@ -200,32 +200,28 @@ int DrmConnector::UpdateModes() {
     if (!exists) {
       DrmMode m(&c->modes[i]);
       if (xres && yres) {
-        if (m.h_display() != xres || m.v_display() != yres)
+        if (m.h_display() != xres || m.v_display() != yres ||
+              (rate && m.v_refresh() != rate))
           continue;
-
-        if (rate != 0) {
-            if (m.v_refresh() != rate)
-                continue;
-        }
-        bool added = false;
-        // already a matching one added
-        for (const DrmMode &mode : new_modes) {
-          if (m.h_display() == mode.h_display() &&
-              m.v_display() == mode.v_display()) {
-            if (rate != 0) {
-              if (m.v_refresh() == mode.v_refresh()) {
-                added = true;
-              }
-            } else {
-              // first one of xres x yres wins
+      }
+      bool added = false;
+      // already a matching one added
+      for (const DrmMode &mode : new_modes) {
+        if (m.h_display() == mode.h_display() &&
+            m.v_display() == mode.v_display()) {
+          if (rate) {
+            if (m.v_refresh() == mode.v_refresh()) {
               added = true;
             }
-            break;
+          } else {
+            // first one of xres x yres wins
+            added = true;
           }
+          break;
         }
-        if (added) {
-          continue;
-        }
+      }
+      if (added) {
+        continue;
       }
       m.set_id(drm_->next_mode_id());
       new_modes.push_back(m);
