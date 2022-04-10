@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020 The Android Open Source Project
+ * Copyright (C) 2016 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,17 +14,34 @@
  * limitations under the License.
  */
 
-#ifndef HWC_DISPLAY_BACKEND_RCAR_DU_H
-#define HWC_DISPLAY_BACKEND_RCAR_DU_H
+#ifndef ANDROID_UEVENT_LISTENER_H_
+#define ANDROID_UEVENT_LISTENER_H_
 
-#include "Backend.h"
+#include <functional>
+
+#include "utils/UEvent.h"
+#include "utils/Worker.h"
 
 namespace android {
 
-class BackendRCarDu : public Backend {
+class UEventListener : public Worker {
  public:
-  bool IsClientLayer(DrmHwcTwo::HwcDisplay *display,
-                     DrmHwcTwo::HwcLayer *layer) override;
+  UEventListener();
+  ~UEventListener() override = default;
+
+  int Init();
+
+  void RegisterHotplugHandler(std::function<void()> hotplug_handler) {
+    hotplug_handler_ = std::move(hotplug_handler);
+  }
+
+ protected:
+  void Routine() override;
+
+ private:
+  std::unique_ptr<UEvent> uevent_;
+
+  std::function<void()> hotplug_handler_;
 };
 }  // namespace android
 

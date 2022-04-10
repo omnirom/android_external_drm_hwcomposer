@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015 The Android Open Source Project
+ * Copyright (C) 2022 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,29 +14,31 @@
  * limitations under the License.
  */
 
-#include <pthread.h>
+#ifndef ANDROID_DRM_KMS_PLAN_H_
+#define ANDROID_DRM_KMS_PLAN_H_
+
+#include <memory>
+#include <vector>
+
+#include "drmhwcomposer.h"
 
 namespace android {
 
-class AutoLock {
- public:
-  AutoLock(pthread_mutex_t *mutex, const char *const name)
-      : mutex_(mutex), name_(name) {
-  }
-  ~AutoLock() {
-    if (locked_)
-      Unlock();
-  }
+class DrmDevice;
 
-  AutoLock(const AutoLock &rhs) = delete;
-  AutoLock &operator=(const AutoLock &rhs) = delete;
+struct DrmKmsPlan {
+  struct LayerToPlaneJoining {
+    DrmHwcLayer layer;
+    std::shared_ptr<BindingOwner<DrmPlane>> plane;
+    int z_pos;
+  };
 
-  int Lock();
-  int Unlock();
+  std::vector<LayerToPlaneJoining> plan;
 
- private:
-  pthread_mutex_t *const mutex_;
-  bool locked_ = false;
-  const char *const name_;
+  static auto CreateDrmKmsPlan(DrmDisplayPipeline &pipe,
+                               std::vector<DrmHwcLayer> composition)
+      -> std::unique_ptr<DrmKmsPlan>;
 };
+
 }  // namespace android
+#endif
