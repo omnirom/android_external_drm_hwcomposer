@@ -582,7 +582,6 @@ std::tuple<int, uint32_t> DrmDisplayCompositor::CreateModeBlob(
 }
 
 void DrmDisplayCompositor::ClearDisplay() {
-  vsync_worker_.VSyncControl(false);
   if (!active_composition_)
     return;
 
