@@ -168,11 +168,15 @@ auto ResourceManager::GetOrderedConnectors() -> std::vector<DrmConnector *> {
       }
     }
   }
-
-  for (auto &drm : drms_) {
-    for (const auto &conn : drm->GetConnectors()) {
-      if (conn->IsExternal()) {
-        ordered_connectors.emplace_back(conn.get());
+  char add_external_conn[PROPERTY_VALUE_MAX];
+  property_get("debug.drm.connector.skip_external", add_external_conn, "0");
+  bool skip_external_conn = bool(strncmp(add_external_conn, "0", 1));
+  if (!skip_external_conn || ordered_connectors.size() == 0) {
+    for (auto &drm : drms_) {
+      for (const auto &conn : drm->GetConnectors()) {
+        if (conn->IsExternal()) {
+          ordered_connectors.emplace_back(conn.get());
+        }
       }
     }
   }
