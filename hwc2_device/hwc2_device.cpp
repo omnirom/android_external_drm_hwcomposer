@@ -35,11 +35,11 @@ namespace android {
  * to the short "android::HwcLayer::SetLayerBuffer" for better logs readability
  */
 static std::string GetFuncName(const char *pretty_function) {
-  std::string str(pretty_function);
+  const std::string str(pretty_function);
   const char *start = "func = &";
-  size_t p1 = str.find(start);
+  auto p1 = str.find(start);
   p1 += strlen(start);
-  size_t p2 = str.find(',', p1);
+  auto p2 = str.find(',', p1);
   return str.substr(p1, p2 - p1);
 }
 
@@ -63,7 +63,7 @@ template <typename T, typename HookType, HookType func, typename... Args>
 static T DeviceHook(hwc2_device_t *dev, Args... args) {
   ALOGV("Device hook: %s", GetFuncName(__PRETTY_FUNCTION__).c_str());
   DrmHwcTwo *hwc = ToDrmHwcTwo(dev);
-  const std::lock_guard<std::mutex> lock(hwc->GetResMan().GetMainLock());
+  const std::unique_lock lock(hwc->GetResMan().GetMainLock());
   return static_cast<T>(((*hwc).*func)(std::forward<Args>(args)...));
 }
 
@@ -73,7 +73,7 @@ static int32_t DisplayHook(hwc2_device_t *dev, hwc2_display_t display_handle,
   ALOGV("Display #%" PRIu64 " hook: %s", display_handle,
         GetFuncName(__PRETTY_FUNCTION__).c_str());
   DrmHwcTwo *hwc = ToDrmHwcTwo(dev);
-  const std::lock_guard<std::mutex> lock(hwc->GetResMan().GetMainLock());
+  const std::unique_lock lock(hwc->GetResMan().GetMainLock());
   auto *display = hwc->GetDisplay(display_handle);
   if (display == nullptr)
     return static_cast<int32_t>(HWC2::Error::BadDisplay);
@@ -87,7 +87,7 @@ static int32_t LayerHook(hwc2_device_t *dev, hwc2_display_t display_handle,
   ALOGV("Display #%" PRIu64 " Layer: #%" PRIu64 " hook: %s", display_handle,
         layer_handle, GetFuncName(__PRETTY_FUNCTION__).c_str());
   DrmHwcTwo *hwc = ToDrmHwcTwo(dev);
-  const std::lock_guard<std::mutex> lock(hwc->GetResMan().GetMainLock());
+  const std::unique_lock lock(hwc->GetResMan().GetMainLock());
   auto *display = hwc->GetDisplay(display_handle);
   if (display == nullptr)
     return static_cast<int32_t>(HWC2::Error::BadDisplay);
@@ -102,7 +102,7 @@ static int32_t LayerHook(hwc2_device_t *dev, hwc2_display_t display_handle,
 static int HookDevClose(hw_device_t *dev) {
   // NOLINTNEXTLINE (cppcoreguidelines-pro-type-reinterpret-cast): Safe
   auto *hwc2_dev = reinterpret_cast<hwc2_device_t *>(dev);
-  std::unique_ptr<DrmHwcTwo> ctx(ToDrmHwcTwo(hwc2_dev));
+  const std::unique_ptr<DrmHwcTwo> ctx(ToDrmHwcTwo(hwc2_dev));
   return 0;
 }
 
@@ -244,7 +244,7 @@ static hwc2_function_pointer_t HookDevGetFunction(struct hwc2_device * /*dev*/,
       return ToHook<HWC2_PFN_VALIDATE_DISPLAY>(
           DisplayHook<decltype(&HwcDisplay::ValidateDisplay),
                       &HwcDisplay::ValidateDisplay, uint32_t *, uint32_t *>);
-#if PLATFORM_SDK_VERSION > 27
+#if __ANDROID_API__ > 27
     case HWC2::FunctionDescriptor::GetRenderIntents:
       return ToHook<HWC2_PFN_GET_RENDER_INTENTS>(
           DisplayHook<decltype(&HwcDisplay::GetRenderIntents),
@@ -255,7 +255,7 @@ static hwc2_function_pointer_t HookDevGetFunction(struct hwc2_device * /*dev*/,
           DisplayHook<decltype(&HwcDisplay::SetColorModeWithIntent),
                       &HwcDisplay::SetColorModeWithIntent, int32_t, int32_t>);
 #endif
-#if PLATFORM_SDK_VERSION > 28
+#if __ANDROID_API__ > 28
     case HWC2::FunctionDescriptor::GetDisplayIdentificationData:
       return ToHook<HWC2_PFN_GET_DISPLAY_IDENTIFICATION_DATA>(
           DisplayHook<decltype(&HwcDisplay::GetDisplayIdentificationData),
@@ -274,8 +274,8 @@ static hwc2_function_pointer_t HookDevGetFunction(struct hwc2_device * /*dev*/,
       return ToHook<HWC2_PFN_SET_DISPLAY_BRIGHTNESS>(
           DisplayHook<decltype(&HwcDisplay::SetDisplayBrightness),
                       &HwcDisplay::SetDisplayBrightness, float>);
-#endif /* PLATFORM_SDK_VERSION > 28 */
-#if PLATFORM_SDK_VERSION > 29
+#endif /* __ANDROID_API__ > 28 */
+#if __ANDROID_API__ > 29
     case HWC2::FunctionDescriptor::GetDisplayConnectionType:
       return ToHook<HWC2_PFN_GET_DISPLAY_CONNECTION_TYPE>(
           DisplayHook<decltype(&HwcDisplay::GetDisplayConnectionType),
