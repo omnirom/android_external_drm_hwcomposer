@@ -98,7 +98,7 @@ static auto TryCreatePipeline(DrmDevice &dev, DrmConnector &connector,
     return {};
   }
 
-  pipe->atomic_state_manager = std::make_unique<DrmAtomicStateManager>(
+  pipe->atomic_state_manager = DrmAtomicStateManager::CreateInstance(
       pipe.get());
 
   return pipe;
@@ -171,9 +171,9 @@ auto DrmDisplayPipeline::GetUsablePlanes()
   std::vector<std::shared_ptr<BindingOwner<DrmPlane>>> planes;
   planes.emplace_back(primary_plane);
 
-  static bool use_overlay_planes = ReadUseOverlayProperty();
+  const static bool kUseOverlayPlanes = ReadUseOverlayProperty();
 
-  if (use_overlay_planes) {
+  if (kUseOverlayPlanes) {
     for (const auto &plane : device->GetPlanes()) {
       if (plane->IsCrtcSupported(*crtc->Get())) {
         if (plane->GetType() == DRM_PLANE_TYPE_OVERLAY) {
@@ -187,6 +187,11 @@ auto DrmDisplayPipeline::GetUsablePlanes()
   }
 
   return planes;
+}
+
+DrmDisplayPipeline::~DrmDisplayPipeline() {
+  if (atomic_state_manager)
+    atomic_state_manager->StopThread();
 }
 
 }  // namespace android
