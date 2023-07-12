@@ -14,8 +14,7 @@
  * limitations under the License.
  */
 
-#ifndef ANDROID_DRMDISPLAYPIPELINE_H_
-#define ANDROID_DRMDISPLAYPIPELINE_H_
+#pragma once
 
 #include <memory>
 #include <vector>
@@ -75,6 +74,8 @@ struct DrmDisplayPipeline {
   auto GetUsablePlanes()
       -> std::vector<std::shared_ptr<BindingOwner<DrmPlane>>>;
 
+  ~DrmDisplayPipeline();
+
   DrmDevice *device;
 
   std::shared_ptr<BindingOwner<DrmConnector>> connector;
@@ -82,9 +83,7 @@ struct DrmDisplayPipeline {
   std::shared_ptr<BindingOwner<DrmCrtc>> crtc;
   std::shared_ptr<BindingOwner<DrmPlane>> primary_plane;
 
-  std::unique_ptr<DrmAtomicStateManager> atomic_state_manager;
+  std::shared_ptr<DrmAtomicStateManager> atomic_state_manager;
 };
 
 }  // namespace android
-
-#endif

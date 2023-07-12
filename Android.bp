@@ -12,9 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// =====================
-// libdrmhwc_utils.a
-// =====================
 package {
     default_applicable_licenses: ["external_drm_hwcomposer_license"],
 }
@@ -32,20 +29,10 @@ license {
     ],
 }
 
-cc_library_static {
-    name: "libdrmhwc_utils",
-
-    srcs: ["utils/Worker.cpp"],
-
-    include_dirs: ["external/drm_hwcomposer"],
-
-    cflags: [
-        "-Wall",
-        "-Werror",
-    ],
-
+cc_library_headers {
+    name: "drm_hwcomposer_headers",
     vendor: true,
-
+    export_include_dirs: ["."],
 }
 
 // =====================
@@ -65,9 +52,7 @@ cc_defaults {
         "libutils",
     ],
 
-    include_dirs: ["external/drm_hwcomposer"],
-
-    static_libs: ["libdrmhwc_utils"],
+    header_libs: ["drm_hwcomposer_headers"],
 
     cflags: [
         "-Wall",
@@ -80,14 +65,13 @@ cc_defaults {
         "-std=c++17",
     ],
 
-    product_variables: {
-        platform_sdk_version: {
-            cflags: ["-DPLATFORM_SDK_VERSION=%d"],
-        },
-    },
-
     relative_install_path: "hw",
     vendor: true,
+}
+
+filegroup {
+    name: "drm_hwcomposer_fd",
+    srcs: ["utils/fd.cpp"],
 }
 
 filegroup {
@@ -97,6 +81,7 @@ filegroup {
         "bufferinfo/BufferInfoMapperMetadata.cpp",
 
         "compositor/DrmKmsPlan.cpp",
+        "compositor/FlatteningController.cpp",
 
         "drm/DrmAtomicStateManager.cpp",
         "drm/DrmConnector.cpp",
@@ -121,6 +106,8 @@ filegroup {
         "hwc2_device/HwcDisplayConfigs.cpp",
         "hwc2_device/HwcLayer.cpp",
         "hwc2_device/hwc2_device.cpp",
+
+        "utils/fd.cpp",
     ],
 }
 

@@ -14,8 +14,7 @@
  * limitations under the License.
  */
 
-#ifndef ANDROID_HWC2_DEVICE_HWC_LAYER_H
-#define ANDROID_HWC2_DEVICE_HWC_LAYER_H
+#pragma once
 
 #include <hardware/hwcomposer2.h>
 
@@ -87,9 +86,6 @@ class HwcLayer {
   uint32_t z_order_ = 0;
   LayerData layer_data_;
 
-  /* Should be populated to layer_data_.acquire_fence only before presenting */
-  UniqueFd acquire_fence_;
-
   /* The following buffer data can have 2 sources:
    * 1 - Mapper@4 metadata API
    * 2 - HWC@2 API
@@ -109,7 +105,7 @@ class HwcLayer {
 
   /* Layer state */
  public:
-  void PopulateLayerData(bool test);
+  void PopulateLayerData();
 
   bool IsLayerUsableAsDevice() const {
     return !bi_get_failed_ && !fb_import_failed_ && buffer_handle_ != nullptr;
@@ -140,5 +136,3 @@ class HwcLayer {
 };
 
 }  // namespace android
-
-#endif
