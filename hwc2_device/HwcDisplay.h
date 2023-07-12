@@ -14,14 +14,16 @@
  * limitations under the License.
  */
 
-#ifndef ANDROID_HWC2_DEVICE_HWC_DISPLAY_H
-#define ANDROID_HWC2_DEVICE_HWC_DISPLAY_H
+#pragma once
 
 #include <hardware/hwcomposer2.h>
 
+#include <atomic>
 #include <optional>
+#include <sstream>
 
 #include "HwcDisplayConfigs.h"
+#include "compositor/FlatteningController.h"
 #include "compositor/LayerData.h"
 #include "drm/DrmAtomicStateManager.h"
 #include "drm/ResourceManager.h"
@@ -69,12 +71,12 @@ class HwcDisplay {
                                  uint32_t *num_elements, hwc2_layer_t *layers,
                                  int32_t *layer_requests);
   HWC2::Error GetDisplayType(int32_t *type);
-#if PLATFORM_SDK_VERSION > 27
+#if __ANDROID_API__ > 27
   HWC2::Error GetRenderIntents(int32_t mode, uint32_t *outNumIntents,
                                int32_t *outIntents);
   HWC2::Error SetColorModeWithIntent(int32_t mode, int32_t intent);
 #endif
-#if PLATFORM_SDK_VERSION > 28
+#if __ANDROID_API__ > 28
   HWC2::Error GetDisplayIdentificationData(uint8_t *outPort,
                                            uint32_t *outDataSize,
                                            uint8_t *outData);
@@ -83,7 +85,7 @@ class HwcDisplay {
   HWC2::Error GetDisplayBrightnessSupport(bool *supported);
   HWC2::Error SetDisplayBrightness(float);
 #endif
-#if PLATFORM_SDK_VERSION > 29
+#if __ANDROID_API__ > 29
   HWC2::Error GetDisplayConnectionType(uint32_t *outType);
 
   HWC2::Error SetActiveConfigWithConstraints(
@@ -158,17 +160,11 @@ class HwcDisplay {
     return *pipeline_;
   }
 
-  android_color_transform_t &color_transform_hint() {
-    return color_transform_hint_;
-  }
+  bool CtmByGpu();
 
   Stats &total_stats() {
     return total_stats_;
   }
-
-  /* returns true if composition should be sent to client */
-  bool ProcessClientFlatteningState(bool skip);
-  void ProcessFlatenningVsyncInternal();
 
   /* Headless mode required to keep SurfaceFlinger alive when all display are
    * disconnected, Without headless mode Android will continuously crash.
@@ -182,24 +178,16 @@ class HwcDisplay {
 
   void Deinit();
 
+  auto GetFlatCon() {
+    return flatcon_;
+  }
+
  private:
-  enum ClientFlattenningState : int32_t {
-    Disabled = -3,
-    NotRequired = -2,
-    Flattened = -1,
-    ClientRefreshRequested = 0,
-    VsyncCountdownMax = 60, /* 1 sec @ 60FPS */
-  };
-
-  std::atomic_int flattenning_state_{ClientFlattenningState::NotRequired};
-
-  constexpr static size_t MATRIX_SIZE = 16;
-
   HwcDisplayConfigs configs_;
 
   DrmHwcTwo *const hwc2_;
 
-  UniqueFd present_fence_;
+  SharedFd present_fence_;
 
   std::optional<DrmMode> staged_mode_;
   int64_t staged_mode_change_time_{};
@@ -208,10 +196,10 @@ class HwcDisplay {
   DrmDisplayPipeline *pipeline_{};
 
   std::unique_ptr<Backend> backend_;
+  std::shared_ptr<FlatteningController> flatcon_;
 
-  VSyncWorker vsync_worker_;
+  std::shared_ptr<VSyncWorker> vsync_worker_;
   bool vsync_event_en_{};
-  bool vsync_flattening_en_{};
   bool vsync_tracking_en_{};
   int64_t last_vsync_ts_{};
 
@@ -223,8 +211,10 @@ class HwcDisplay {
   std::map<hwc2_layer_t, HwcLayer> layers_;
   HwcLayer client_layer_;
   int32_t color_mode_{};
-  std::array<float, MATRIX_SIZE> color_transform_matrix_{};
-  android_color_transform_t color_transform_hint_;
+  static constexpr int kCtmRows = 3;
+  static constexpr int kCtmCols = 3;
+  std::shared_ptr<drm_color_ctm> color_matrix_;
+  android_color_transform_t color_transform_hint_{};
 
   std::shared_ptr<DrmKmsPlan> current_plan_;
 
@@ -233,11 +223,11 @@ class HwcDisplay {
   Stats prev_stats_;
   std::string DumpDelta(HwcDisplay::Stats delta);
 
+  void SetColorMarixToIdentity();
+
   HWC2::Error Init();
 
   HWC2::Error SetActiveConfigInternal(uint32_t config, int64_t change_time);
 };
 
 }  // namespace android
-
-#endif
