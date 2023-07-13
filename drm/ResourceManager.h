@@ -14,10 +14,10 @@
  * limitations under the License.
  */
 
-#ifndef RESOURCEMANAGER_H
-#define RESOURCEMANAGER_H
+#pragma once
 
 #include <cstring>
+#include <mutex>
 
 #include "DrmDevice.h"
 #include "DrmDisplayPipeline.h"
@@ -25,6 +25,11 @@
 #include "UEventListener.h"
 
 namespace android {
+
+enum class CtmHandling {
+  kDrmOrGpu,    /* Handled by DRM is possible, otherwise by GPU */
+  kDrmOrIgnore, /* Handled by DRM is possible, otherwise displayed as is */
+};
 
 class PipelineToFrontendBindingInterface {
  public:
@@ -42,7 +47,7 @@ class ResourceManager {
   ResourceManager &operator=(const ResourceManager &) = delete;
   ResourceManager(const ResourceManager &&) = delete;
   ResourceManager &&operator=(const ResourceManager &&) = delete;
-  ~ResourceManager();
+  ~ResourceManager() = default;
 
   void Init();
 
@@ -50,6 +55,10 @@ class ResourceManager {
 
   bool ForcedScalingWithGpu() const {
     return scale_with_gpu_;
+  }
+
+  auto &GetCtmHandling() const {
+    return ctm_handling_;
   }
 
   auto &GetMainLock() {
@@ -65,11 +74,13 @@ class ResourceManager {
 
   std::vector<std::unique_ptr<DrmDevice>> drms_;
 
+  // Android properties:
   bool scale_with_gpu_{};
+  CtmHandling ctm_handling_{};
 
-  UEventListener uevent_listener_;
+  std::shared_ptr<UEventListener> uevent_listener_;
 
-  std::mutex main_lock_;
+  std::recursive_mutex main_lock_;
 
   std::map<DrmConnector *, std::unique_ptr<DrmDisplayPipeline>>
       attached_pipelines_;
@@ -79,5 +90,3 @@ class ResourceManager {
   bool initialized_{};
 };
 }  // namespace android
-
-#endif  // RESOURCEMANAGER_H

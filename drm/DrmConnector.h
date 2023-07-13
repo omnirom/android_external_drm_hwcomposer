@@ -14,8 +14,7 @@
  * limitations under the License.
  */
 
-#ifndef ANDROID_DRM_CONNECTOR_H_
-#define ANDROID_DRM_CONNECTOR_H_
+#pragma once
 
 #include <xf86drmMode.h>
 
@@ -83,12 +82,6 @@ class DrmConnector : public PipelineBindable<DrmConnector> {
     return modes_;
   }
 
-  auto &GetActiveMode() const {
-    return active_mode_;
-  }
-
-  void SetActiveMode(DrmMode &mode);
-
   auto &GetDpmsProperty() const {
     return dpms_property_;
   }
@@ -124,7 +117,6 @@ class DrmConnector : public PipelineBindable<DrmConnector> {
 
   const uint32_t index_in_res_array_;
 
-  DrmMode active_mode_;
   std::vector<DrmMode> modes_;
 
   DrmProperty dpms_property_;
@@ -135,5 +127,3 @@ class DrmConnector : public PipelineBindable<DrmConnector> {
   DrmProperty writeback_out_fence_;
 };
 }  // namespace android
-
-#endif  // ANDROID_DRM_PLANE_H_

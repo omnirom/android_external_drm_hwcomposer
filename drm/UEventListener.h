@@ -14,35 +14,31 @@
  * limitations under the License.
  */
 
-#ifndef ANDROID_UEVENT_LISTENER_H_
-#define ANDROID_UEVENT_LISTENER_H_
+#pragma once
 
 #include <functional>
 
 #include "utils/UEvent.h"
-#include "utils/Worker.h"
 
 namespace android {
 
-class UEventListener : public Worker {
+class UEventListener {
  public:
-  UEventListener();
-  ~UEventListener() override = default;
+  ~UEventListener() = default;
 
-  int Init();
+  static auto CreateInstance() -> std::shared_ptr<UEventListener>;
 
   void RegisterHotplugHandler(std::function<void()> hotplug_handler) {
     hotplug_handler_ = std::move(hotplug_handler);
   }
 
- protected:
-  void Routine() override;
-
  private:
+  UEventListener() = default;
+
+  void ThreadFn(const std::shared_ptr<UEventListener> &uel);
+
   std::unique_ptr<UEvent> uevent_;
 
   std::function<void()> hotplug_handler_;
 };
 }  // namespace android
-
-#endif
