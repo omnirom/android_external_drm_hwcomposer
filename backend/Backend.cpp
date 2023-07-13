@@ -33,27 +33,36 @@ HWC2::Error Backend::ValidateDisplay(HwcDisplay *display, uint32_t *num_types,
   int client_start = -1;
   size_t client_size = 0;
 
-  if (display->ProcessClientFlatteningState(layers.size() <= 1)) {
-    display->total_stats().frames_flattened_++;
+  auto flatcon = display->GetFlatCon();
+  if (flatcon) {
+    bool should_flatten = false;
+    if (layers.size() <= 1)
+      flatcon->Disable();
+    else
+      should_flatten = flatcon->NewFrame();
+
+    if (should_flatten) {
+      display->total_stats().frames_flattened_++;
+      MarkValidated(layers, 0, layers.size());
+      *num_types = layers.size();
+      return HWC2::Error::HasChanges;
+    }
+  }
+
+  std::tie(client_start, client_size) = GetClientLayers(display, layers);
+
+  MarkValidated(layers, client_start, client_size);
+
+  auto testing_needed = client_start != 0 || client_size != layers.size();
+
+  AtomicCommitArgs a_args = {.test_only = true};
+
+  if (testing_needed &&
+      display->CreateComposition(a_args) != HWC2::Error::None) {
+    ++display->total_stats().failed_kms_validate_;
     client_start = 0;
     client_size = layers.size();
-    MarkValidated(layers, client_start, client_size);
-  } else {
-    std::tie(client_start, client_size) = GetClientLayers(display, layers);
-
-    MarkValidated(layers, client_start, client_size);
-
-    bool testing_needed = !(client_start == 0 && client_size == layers.size());
-
-    AtomicCommitArgs a_args = {.test_only = true};
-
-    if (testing_needed &&
-        display->CreateComposition(a_args) != HWC2::Error::None) {
-      ++display->total_stats().failed_kms_validate_;
-      client_start = 0;
-      client_size = layers.size();
-      MarkValidated(layers, 0, client_size);
-    }
+    MarkValidated(layers, 0, client_size);
   }
 
   *num_types = client_size;
@@ -83,8 +92,7 @@ std::tuple<int, size_t> Backend::GetClientLayers(
 
 bool Backend::IsClientLayer(HwcDisplay *display, HwcLayer *layer) {
   return !HardwareSupportsLayerType(layer->GetSfType()) ||
-         !layer->IsLayerUsableAsDevice() ||
-         display->color_transform_hint() != HAL_COLOR_TRANSFORM_IDENTITY ||
+         !layer->IsLayerUsableAsDevice() || display->CtmByGpu() ||
          (layer->GetLayerData().pi.RequireScalingOrPhasing() &&
           display->GetHwc2()->GetResMan().ForcedScalingWithGpu());
 }
@@ -99,7 +107,7 @@ uint32_t Backend::CalcPixOps(const std::vector<HwcLayer *> &layers,
   uint32_t pixops = 0;
   for (size_t z_order = 0; z_order < layers.size(); ++z_order) {
     if (z_order >= first_z && z_order < first_z + size) {
-      hwc_rect_t &df = layers[z_order]->GetLayerData().pi.display_frame;
+      auto &df = layers[z_order]->GetLayerData().pi.display_frame;
       pixops += (df.right - df.left) * (df.bottom - df.top);
     }
   }
@@ -129,16 +137,16 @@ std::tuple<int, int> Backend::GetExtraClientRange(
   if (avail_planes < display->layers().size())
     avail_planes--;
 
-  int extra_client = int(layers.size() - client_size) - int(avail_planes);
+  const int extra_client = int(layers.size() - client_size) - int(avail_planes);
 
   if (extra_client > 0) {
     int start = 0;
     size_t steps = 0;
     if (client_size != 0) {
-      int prepend = std::min(client_start, extra_client);
-      int append = std::min(int(layers.size()) -
-                                int(client_start + client_size),
-                            extra_client);
+      const int prepend = std::min(client_start, extra_client);
+      const int append = std::min(int(layers.size()) -
+                                      int(client_start + client_size),
+                                  extra_client);
       start = client_start - (int)prepend;
       client_size += extra_client;
       steps = 1 + std::min(std::min(append, prepend),
@@ -150,7 +158,7 @@ std::tuple<int, int> Backend::GetExtraClientRange(
 
     uint32_t gpu_pixops = UINT32_MAX;
     for (size_t i = 0; i < steps; i++) {
-      uint32_t po = CalcPixOps(layers, start + i, client_size);
+      const uint32_t po = CalcPixOps(layers, start + i, client_size);
       if (po < gpu_pixops) {
         gpu_pixops = po;
         client_start = start + int(i);

@@ -1,5 +1,13 @@
 #! /usr/bin/env bash
 
+check_tool_installed() {
+	if ! command -v $1 &> /dev/null
+	then
+		echo "Please install '$1' tool"
+		exit 1
+	fi
+}
+
 echoerr() {
 	printf "ERROR: %s\n" "$*" >&2
 }
@@ -27,6 +35,9 @@ findtag() {
 	return 1
 }
 
+check_tool_installed bpfmt
+check_tool_installed clang-format-diff-15
+
 git fetch https://gitlab.freedesktop.org/drm-hwcomposer/drm-hwcomposer.git
 
 git log --pretty='%h' FETCH_HEAD..HEAD | while read h; do
@@ -50,7 +61,7 @@ git log --pretty='%h' FETCH_HEAD..HEAD | while read h; do
 		exit 1
 	fi
 
-	git show "$h" -- | clang-format-diff-14 -p 1 -style=file > /tmp/format-fixup.patch
+	git show "$h" -- | clang-format-diff-15 -p 1 -style=file > /tmp/format-fixup.patch
 	if [ -s  /tmp/format-fixup.patch ]; then
 		cat /tmp/format-fixup.patch >&2
 		exit 1
