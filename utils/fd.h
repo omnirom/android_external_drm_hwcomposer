@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022 The Android Open Source Project
+ * Copyright (C) 2015 - 2023 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,27 +16,21 @@
 
 #pragma once
 
-#include <memory>
-#include <vector>
+#include <fcntl.h>
+#include <unistd.h>
 
-#include "LayerData.h"
+#include <memory>
+#include <utility>
 
 namespace android {
 
-class DrmDevice;
+using UniqueFd = std::unique_ptr<int, void (*)(const int *)>;
+using SharedFd = std::shared_ptr<int>;
 
-struct DrmKmsPlan {
-  struct LayerToPlaneJoining {
-    LayerData layer;
-    std::shared_ptr<BindingOwner<DrmPlane>> plane;
-    int z_pos;
-  };
+auto MakeUniqueFd(int fd) -> UniqueFd;
 
-  std::vector<LayerToPlaneJoining> plan;
+auto MakeSharedFd(int fd) -> SharedFd;
 
-  static auto CreateDrmKmsPlan(DrmDisplayPipeline &pipe,
-                               std::vector<LayerData> composition)
-      -> std::unique_ptr<DrmKmsPlan>;
-};
+auto DupFd(SharedFd const &fd) -> int;
 
 }  // namespace android

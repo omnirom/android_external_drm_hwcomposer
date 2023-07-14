@@ -61,16 +61,9 @@ void DrmHwcTwo::FinalizeDisplayBinding() {
   const int kTimeForSFToDisposeDisplayUs = 200000;
   usleep(kTimeForSFToDisposeDisplayUs);
   mutex.lock();
-  std::vector<std::unique_ptr<HwcDisplay>> for_disposal;
   for (auto handle : displays_for_removal_list_) {
-    for_disposal.emplace_back(
-        std::unique_ptr<HwcDisplay>(displays_[handle].release()));
     displays_.erase(handle);
   }
-  /* Destroy HwcDisplays while unlocked to avoid vsyncworker deadlocks */
-  mutex.unlock();
-  for_disposal.clear();
-  mutex.lock();
 }
 
 bool DrmHwcTwo::BindDisplay(DrmDisplayPipeline *pipeline) {
@@ -180,10 +173,7 @@ HWC2::Error DrmHwcTwo::RegisterCallback(int32_t descriptor,
         /* Headless display may still be here. Remove it! */
         if (displays_.count(kPrimaryDisplay) != 0) {
           displays_[kPrimaryDisplay]->Deinit();
-          auto &mutex = GetResMan().GetMainLock();
-          mutex.unlock();
           displays_.erase(kPrimaryDisplay);
-          mutex.lock();
         }
       }
       break;
@@ -196,7 +186,7 @@ HWC2::Error DrmHwcTwo::RegisterCallback(int32_t descriptor,
       vsync_callback_ = std::make_pair(HWC2_PFN_VSYNC(function), data);
       break;
     }
-#if PLATFORM_SDK_VERSION > 29
+#if __ANDROID_API__ > 29
     case HWC2::Callback::Vsync_2_4: {
       vsync_2_4_callback_ = std::make_pair(HWC2_PFN_VSYNC_2_4(function), data);
       break;
@@ -214,24 +204,15 @@ HWC2::Error DrmHwcTwo::RegisterCallback(int32_t descriptor,
 }
 
 void DrmHwcTwo::SendHotplugEventToClient(hwc2_display_t displayid,
-                                         bool connected) {
-  auto &mutex = GetResMan().GetMainLock();
-  if (mutex.try_lock()) {
-    ALOGE("FIXME!!!: Main mutex must be locked in %s", __func__);
-    mutex.unlock();
-    return;
-  }
-
+                                         bool connected) const {
   auto hc = hotplug_callback_;
   if (hc.first != nullptr && hc.second != nullptr) {
-    /* For some reason CLIENT will call HWC2 API in hotplug callback handler,
-     * which will cause deadlock . Unlock main mutex to prevent this.
+    /* For some reason HWC Service will call HWC2 API in hotplug callback
+     * handler. This is the reason we're using recursive mutex.
      */
-    mutex.unlock();
     hc.first(hc.second, displayid,
              connected == DRM_MODE_CONNECTED ? HWC2_CONNECTION_CONNECTED
                                              : HWC2_CONNECTION_DISCONNECTED);
-    mutex.lock();
   }
 }
 
@@ -239,7 +220,7 @@ void DrmHwcTwo::SendVsyncEventToClient(
     hwc2_display_t displayid, int64_t timestamp,
     [[maybe_unused]] uint32_t vsync_period) const {
   /* vsync callback */
-#if PLATFORM_SDK_VERSION > 29
+#if __ANDROID_API__ > 29
   if (vsync_2_4_callback_.first != nullptr &&
       vsync_2_4_callback_.second != nullptr) {
     vsync_2_4_callback_.first(vsync_2_4_callback_.second, displayid, timestamp,
@@ -255,7 +236,7 @@ void DrmHwcTwo::SendVsyncEventToClient(
 void DrmHwcTwo::SendVsyncPeriodTimingChangedEventToClient(
     [[maybe_unused]] hwc2_display_t displayid,
     [[maybe_unused]] int64_t timestamp) const {
-#if PLATFORM_SDK_VERSION > 29
+#if __ANDROID_API__ > 29
   hwc_vsync_period_change_timeline_t timeline = {
       .newVsyncAppliedTimeNanos = timestamp,
       .refreshRequired = false,

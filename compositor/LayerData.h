@@ -27,7 +27,7 @@
 
 #include "bufferinfo/BufferInfo.h"
 #include "drm/DrmFbImporter.h"
-#include "utils/UniqueFd.h"
+#include "utils/fd.h"
 
 namespace android {
 
@@ -49,33 +49,24 @@ struct PresentInfo {
   hwc_rect_t display_frame{};
 
   bool RequireScalingOrPhasing() const {
-    float src_width = source_crop.right - source_crop.left;
-    float src_height = source_crop.bottom - source_crop.top;
+    const float src_width = source_crop.right - source_crop.left;
+    const float src_height = source_crop.bottom - source_crop.top;
 
     auto dest_width = float(display_frame.right - display_frame.left);
     auto dest_height = float(display_frame.bottom - display_frame.top);
 
-    bool scaling = src_width != dest_width || src_height != dest_height;
-    bool phasing = (source_crop.left - std::floor(source_crop.left) != 0) ||
+    auto scaling = src_width != dest_width || src_height != dest_height;
+    auto phasing = (source_crop.left - std::floor(source_crop.left) != 0) ||
                    (source_crop.top - std::floor(source_crop.top) != 0);
     return scaling || phasing;
   }
 };
 
 struct LayerData {
-  auto Clone() {
-    LayerData clonned;
-    clonned.bi = bi;
-    clonned.fb = fb;
-    clonned.pi = pi;
-    clonned.acquire_fence = std::move(acquire_fence);
-    return clonned;
-  }
-
   std::optional<BufferInfo> bi;
   std::shared_ptr<DrmFbIdHandle> fb;
   PresentInfo pi;
-  UniqueFd acquire_fence;
+  SharedFd acquire_fence;
 };
 
 }  // namespace android

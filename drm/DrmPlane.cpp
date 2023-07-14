@@ -31,7 +31,7 @@ namespace android {
 
 auto DrmPlane::CreateInstance(DrmDevice &dev, uint32_t plane_id)
     -> std::unique_ptr<DrmPlane> {
-  auto p = MakeDrmModePlaneUnique(dev.GetFd(), plane_id);
+  auto p = MakeDrmModePlaneUnique(*dev.GetFd(), plane_id);
   if (!p) {
     ALOGE("Failed to get plane %d", plane_id);
     return {};
@@ -57,21 +57,19 @@ int DrmPlane::Init() {
     return -ENOTSUP;
   }
 
-  int ret = 0;
-  uint64_t type = 0;
-  std::tie(ret, type) = p.value();
-  if (ret != 0) {
+  auto type = p.GetValue();
+  if (!type) {
     ALOGE("Failed to get plane type property value");
-    return ret;
+    return -EINVAL;
   }
-  switch (type) {
+  switch (*type) {
     case DRM_PLANE_TYPE_OVERLAY:
     case DRM_PLANE_TYPE_PRIMARY:
     case DRM_PLANE_TYPE_CURSOR:
-      type_ = (uint32_t)type;
+      type_ = (uint32_t)*type;
       break;
     default:
-      ALOGE("Invalid plane type %" PRIu64, type);
+      ALOGE("Invalid plane type %" PRIu64, *type);
       return -EINVAL;
   }
 
@@ -148,9 +146,10 @@ int DrmPlane::Init() {
 }
 
 bool DrmPlane::IsCrtcSupported(const DrmCrtc &crtc) const {
-  unsigned int crtc_property_value = 0;
-  std::tie(std::ignore, crtc_property_value) = crtc_property_.value();
-  if (crtc_property_value != 0 && crtc_property_value != crtc.GetId() &&
+  auto crtc_prop_optval = crtc_property_.GetValue();
+  auto crtc_prop_val = crtc_prop_optval ? *crtc_prop_optval : 0;
+
+  if (crtc_prop_val != 0 && crtc_prop_val != crtc.GetId() &&
       GetType() == DRM_PLANE_TYPE_PRIMARY) {
     // Some DRM driver such as omap_drm allows sharing primary plane between
     // CRTCs, but the primay plane could not be shared if it has been used by
@@ -158,10 +157,9 @@ bool DrmPlane::IsCrtcSupported(const DrmCrtc &crtc) const {
     // in the kernel drivers/gpu/drm/drm_atomic.c file.
     // The current drm_hwc design is not ready to support such scenario yet,
     // so adding the CRTC status check here to workaorund for now.
-    ALOGW(
-        "%s: This Plane(id=%d) is activated for Crtc(id=%d), could not be used "
-        "for Crtc (id=%d)",
-        __FUNCTION__, GetId(), crtc_property_value, crtc.GetId());
+    ALOGW("%s: This Plane(id=%d) is activated for Crtc(id=%" PRIu64
+          "), could not be used for Crtc (id=%d)",
+          __FUNCTION__, GetId(), crtc_prop_val, crtc.GetId());
     return false;
   }
 
@@ -169,6 +167,11 @@ bool DrmPlane::IsCrtcSupported(const DrmCrtc &crtc) const {
 }
 
 bool DrmPlane::IsValidForLayer(LayerData *layer) {
+  if (layer == nullptr || !layer->bi) {
+    ALOGE("%s: Invalid parameters", __func__);
+    return false;
+  }
+
   if (!rotation_property_) {
     if (layer->pi.transform != LayerTransform::kIdentity) {
       ALOGV("No rotation property on plane %d", GetId());
@@ -181,7 +184,7 @@ bool DrmPlane::IsValidForLayer(LayerData *layer) {
     }
   }
 
-  if (alpha_property_.id() == 0 && layer->pi.alpha != UINT16_MAX) {
+  if (!alpha_property_ && layer->pi.alpha != UINT16_MAX) {
     ALOGV("Alpha is not supported on plane %d", GetId());
     return false;
   }
@@ -193,7 +196,7 @@ bool DrmPlane::IsValidForLayer(LayerData *layer) {
     return false;
   }
 
-  uint32_t format = layer->bi->format;
+  auto format = layer->bi->format;
   if (!IsFormatSupported(format)) {
     ALOGV("Plane %d does not supports %c%c%c%c format", GetId(), format,
           format >> 8, format >> 16, format >> 24);
@@ -241,16 +244,16 @@ static int To1616FixPt(float in) {
 
 auto DrmPlane::AtomicSetState(drmModeAtomicReq &pset, LayerData &layer,
                               uint32_t zpos, uint32_t crtc_id) -> int {
-  if (!layer.fb) {
-    ALOGE("Expected a valid framebuffer for pset");
+  if (!layer.fb || !layer.bi) {
+    ALOGE("%s: Invalid arguments", __func__);
     return -EINVAL;
   }
 
-  if (zpos_property_ && !zpos_property_.is_immutable()) {
+  if (zpos_property_ && !zpos_property_.IsImmutable()) {
     uint64_t min_zpos = 0;
 
     // Ignore ret and use min_zpos as 0 by default
-    std::tie(std::ignore, min_zpos) = zpos_property_.range_min();
+    std::tie(std::ignore, min_zpos) = zpos_property_.RangeMin();
 
     if (!zpos_property_.AtomicSet(pset, zpos + min_zpos)) {
       return -EINVAL;
@@ -258,7 +261,7 @@ auto DrmPlane::AtomicSetState(drmModeAtomicReq &pset, LayerData &layer,
   }
 
   if (layer.acquire_fence &&
-      !in_fence_fd_property_.AtomicSet(pset, layer.acquire_fence.Get())) {
+      !in_fence_fd_property_.AtomicSet(pset, *layer.acquire_fence)) {
     return -EINVAL;
   }
 
@@ -317,8 +320,8 @@ auto DrmPlane::AtomicDisablePlane(drmModeAtomicReq &pset) -> int {
 
 auto DrmPlane::GetPlaneProperty(const char *prop_name, DrmProperty &property,
                                 Presence presence) -> bool {
-  int err = drm_->GetProperty(GetId(), DRM_MODE_OBJECT_PLANE, prop_name,
-                              &property);
+  auto err = drm_->GetProperty(GetId(), DRM_MODE_OBJECT_PLANE, prop_name,
+                               &property);
   if (err != 0) {
     if (presence == Presence::kMandatory) {
       ALOGE("Could not get mandatory property \"%s\" from plane %d", prop_name,
