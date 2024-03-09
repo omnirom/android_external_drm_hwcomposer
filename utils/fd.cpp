@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022 The Android Open Source Project
+ * Copyright (C) 2023 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,29 +14,39 @@
  * limitations under the License.
  */
 
-#pragma once
-
-#include <memory>
-#include <vector>
-
-#include "LayerData.h"
+#include "fd.h"
 
 namespace android {
 
-class DrmDevice;
+static void CloseFd(const int *fd) {
+  if (fd != nullptr) {
+    if (*fd >= 0)
+      close(*fd);
 
-struct DrmKmsPlan {
-  struct LayerToPlaneJoining {
-    LayerData layer;
-    std::shared_ptr<BindingOwner<DrmPlane>> plane;
-    int z_pos;
-  };
+    // NOLINTNEXTLINE(cppcoreguidelines-owning-memory)
+    delete fd;
+  }
+}
 
-  std::vector<LayerToPlaneJoining> plan;
+auto MakeUniqueFd(int fd) -> UniqueFd {
+  if (fd < 0)
+    return {nullptr, CloseFd};
 
-  static auto CreateDrmKmsPlan(DrmDisplayPipeline &pipe,
-                               std::vector<LayerData> composition)
-      -> std::unique_ptr<DrmKmsPlan>;
-};
+  return {new int(fd), CloseFd};
+}
+
+auto MakeSharedFd(int fd) -> SharedFd {
+  if (fd < 0)
+    return {};
+
+  return {new int(fd), CloseFd};
+}
+
+auto DupFd(SharedFd const &fd) -> int {
+  if (!fd)
+    return -1;
+
+  return fcntl(*fd, F_DUPFD_CLOEXEC, 0);
+}
 
 }  // namespace android

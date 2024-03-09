@@ -36,13 +36,7 @@ namespace android {
 ResourceManager::ResourceManager(
     PipelineToFrontendBindingInterface *p2f_bind_interface)
     : frontend_interface_(p2f_bind_interface) {
-  if (uevent_listener_.Init() != 0) {
-    ALOGE("Can't initialize event listener");
-  }
-}
-
-ResourceManager::~ResourceManager() {
-  uevent_listener_.Exit();
+  uevent_listener_ = UEventListener::CreateInstance();
 }
 
 void ResourceManager::Init() {
@@ -54,8 +48,8 @@ void ResourceManager::Init() {
   char path_pattern[PROPERTY_VALUE_MAX];
   // Could be a valid path or it can have at the end of it the wildcard %
   // which means that it will try open all devices until an error is met.
-  int path_len = property_get("vendor.hwc.drm.device", path_pattern,
-                              "/dev/dri/card%");
+  auto path_len = property_get("vendor.hwc.drm.device", path_pattern,
+                               "/dev/dri/card%");
   if (path_pattern[path_len - 1] != '%') {
     auto dev = DrmDevice::CreateInstance(path_pattern, this);
     if (dev) {
@@ -78,17 +72,29 @@ void ResourceManager::Init() {
     }
   }
 
-  char scale_with_gpu[PROPERTY_VALUE_MAX];
-  property_get("vendor.hwc.drm.scale_with_gpu", scale_with_gpu, "0");
-  scale_with_gpu_ = bool(strncmp(scale_with_gpu, "0", 1));
+  char proptext[PROPERTY_VALUE_MAX];
+  property_get("vendor.hwc.drm.scale_with_gpu", proptext, "0");
+  scale_with_gpu_ = bool(strncmp(proptext, "0", 1));
+
+  constexpr char kDrmOrGpu[] = "DRM_OR_GPU";
+  constexpr char kDrmOrIgnore[] = "DRM_OR_IGNORE";
+  property_get("vendor.hwc.drm.ctm", proptext, kDrmOrGpu);
+  if (strncmp(proptext, kDrmOrGpu, sizeof(kDrmOrGpu)) == 0) {
+    ctm_handling_ = CtmHandling::kDrmOrGpu;
+  } else if (strncmp(proptext, kDrmOrIgnore, sizeof(kDrmOrIgnore)) == 0) {
+    ctm_handling_ = CtmHandling::kDrmOrIgnore;
+  } else {
+    ALOGE("Invalid value for vendor.hwc.drm.ctm: %s", proptext);
+    ctm_handling_ = CtmHandling::kDrmOrGpu;
+  }
 
   if (BufferInfoGetter::GetInstance() == nullptr) {
     ALOGE("Failed to initialize BufferInfoGetter");
     return;
   }
 
-  uevent_listener_.RegisterHotplugHandler([this] {
-    const std::lock_guard<std::mutex> lock(GetMainLock());
+  uevent_listener_->RegisterHotplugHandler([this] {
+    const std::unique_lock lock(GetMainLock());
     UpdateFrontendDisplays();
   });
 
@@ -103,7 +109,7 @@ void ResourceManager::DeInit() {
     return;
   }
 
-  uevent_listener_.RegisterHotplugHandler([] {});
+  uevent_listener_->RegisterHotplugHandler({});
 
   DetachAllFrontendDisplays();
   drms_.clear();
@@ -123,8 +129,8 @@ void ResourceManager::UpdateFrontendDisplays() {
 
   for (auto *conn : ordered_connectors) {
     conn->UpdateModes();
-    bool connected = conn->IsConnected();
-    bool attached = attached_pipelines_.count(conn) != 0;
+    auto connected = conn->IsConnected();
+    auto attached = attached_pipelines_.count(conn) != 0;
 
     if (connected != attached) {
       ALOGI("%s connector %s", connected ? "Attaching" : "Detaching",
