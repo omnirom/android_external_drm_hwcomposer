@@ -196,17 +196,17 @@ int DrmConnector::UpdateModes() {
       //ALOGI("supported mode %dx%d@%f for display in connector %s",
       //      m.h_display(), m.v_display(), m.v_refresh(), GetName().c_str());
       if (xres && yres) {
-        if (!rate && m.h_display() == xres && m.v_display() == yres) {
-          rate = uint32_t(m.v_refresh());
+        if (!rate && m.GetRawMode().hdisplay == xres && m.GetRawMode().vdisplay == yres) {
+          rate = uint32_t(m.GetVRefresh());
         }
-        if (m.h_display() != xres || m.v_display() != yres ||
-              uint32_t(m.v_refresh()) != rate) {
+        if (m.GetRawMode().hdisplay != xres || m.GetRawMode().vdisplay != yres ||
+              uint32_t(m.GetVRefresh()) != rate) {
           continue;
         }
       }
       modes_.emplace_back(m);
       ALOGI("add new mode %dx%d@%.0f for display in connector %s",
-            m.h_display(), m.v_display(), m.v_refresh(), GetName().c_str());
+            m.GetRawMode().hdisplay, m.GetRawMode().vdisplay, m.GetVRefresh(), GetName().c_str());
     }
   }
 
