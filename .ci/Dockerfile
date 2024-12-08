@@ -41,11 +41,11 @@ RUN echo '%sudo ALL=(ALL) NOPASSWD:ALL' >> \
 USER ${RUN_USER}
 
 # Install aospless package (produced by GloDroid/aospext)
-RUN wget -P ${USER_HOME} https://gitlab.freedesktop.org/drm-hwcomposer/drm-hwcomposer/uploads/28ef9379b1a0ec1ee19a17825b0f3f3f/aospless_drm_hwcomposer_arm64.tar.xz && \
+RUN wget -P ${USER_HOME} https://gitlab.freedesktop.org/-/project/5/uploads/d66764aa71f9f1235b92d44a652cd3c3/aospless_drm_hwcomposer_arm64.tar.xz && \
     cd ${USER_HOME} && \
-    (echo 96b2148d04c50cf36d4151ae022e665764b8ca3317712e9467a433b62c545a43 aospless_drm_hwcomposer_arm64.tar.xz | sha256sum --check) && \
-    tar xf aospless_drm_hwcomposer_arm64.tar.xz && \
-    rm -r ${USER_HOME}/aospless/src && ln -s ../drm_hwcomposer/ ${USER_HOME}/aospless/src
+    sha256sum aospless_drm_hwcomposer_arm64.tar.xz && \
+    (echo 00ff288f184111dd35143c462e82fd5f8f31a1417d5eb9a11e8798695abcc141 aospless_drm_hwcomposer_arm64.tar.xz | sha256sum --check) && \
+    tar xf aospless_drm_hwcomposer_arm64.tar.xz && ln -s ../drm_hwcomposer/ ${USER_HOME}/aospless/src
 
 # Create project path
 RUN mkdir -pv ${USER_HOME}/drm_hwcomposer

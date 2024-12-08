@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#define LOG_TAG "hwc-resource-manager"
+#define LOG_TAG "drmhwc"
 
 #include "ResourceManager.h"
 
@@ -37,6 +37,10 @@ ResourceManager::ResourceManager(
     PipelineToFrontendBindingInterface *p2f_bind_interface)
     : frontend_interface_(p2f_bind_interface) {
   uevent_listener_ = UEventListener::CreateInstance();
+}
+
+ResourceManager::~ResourceManager() {
+  uevent_listener_->StopThread();
 }
 
 void ResourceManager::Init() {

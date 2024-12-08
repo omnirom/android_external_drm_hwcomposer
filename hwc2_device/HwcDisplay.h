@@ -33,14 +33,14 @@
 namespace android {
 
 class Backend;
-class DrmHwcTwo;
+class DrmHwc;
 
 inline constexpr uint32_t kPrimaryDisplay = 0;
 
 // NOLINTNEXTLINE
 class HwcDisplay {
  public:
-  HwcDisplay(hwc2_display_t handle, HWC2::DisplayType type, DrmHwcTwo *hwc2);
+  HwcDisplay(hwc2_display_t handle, HWC2::DisplayType type, DrmHwc *hwc);
   HwcDisplay(const HwcDisplay &) = delete;
   ~HwcDisplay();
 
@@ -54,6 +54,10 @@ class HwcDisplay {
 
   std::string Dump();
 
+  const HwcDisplayConfigs &GetDisplayConfigs() const {
+    return configs_;
+  }
+
   // HWC Hooks
   HWC2::Error AcceptDisplayChanges();
   HWC2::Error CreateLayer(hwc2_layer_t *layer);
@@ -66,7 +70,8 @@ class HwcDisplay {
   HWC2::Error GetColorModes(uint32_t *num_modes, int32_t *modes);
   HWC2::Error GetDisplayAttribute(hwc2_config_t config, int32_t attribute,
                                   int32_t *value);
-  HWC2::Error GetDisplayConfigs(uint32_t *num_configs, hwc2_config_t *configs);
+  HWC2::Error LegacyGetDisplayConfigs(uint32_t *num_configs,
+                                      hwc2_config_t *configs);
   HWC2::Error GetDisplayName(uint32_t *size, char *name);
   HWC2::Error GetDisplayRequests(int32_t *display_requests,
                                  uint32_t *num_elements, hwc2_layer_t *layers,
@@ -149,8 +154,8 @@ class HwcDisplay {
   const Backend *backend() const;
   void set_backend(std::unique_ptr<Backend> backend);
 
-  auto GetHwc2() {
-    return hwc2_;
+  auto GetHwc() {
+    return hwc_;
   }
 
   std::map<hwc2_layer_t, HwcLayer> &layers() {
@@ -195,7 +200,7 @@ class HwcDisplay {
  private:
   HwcDisplayConfigs configs_;
 
-  DrmHwcTwo *const hwc2_;
+  DrmHwc *const hwc_;
 
   SharedFd present_fence_;
 

@@ -14,15 +14,15 @@
  * limitations under the License.
  */
 
-#define LOG_TAG "hwc-display"
+#define LOG_TAG "drmhwc"
 #define ATRACE_TAG ATRACE_TAG_GRAPHICS
 
 #include "HwcDisplay.h"
 
-#include "DrmHwcTwo.h"
 #include "backend/Backend.h"
 #include "backend/BackendManager.h"
 #include "bufferinfo/BufferInfoGetter.h"
+#include "drm/DrmHwc.h"
 #include "utils/log.h"
 #include "utils/properties.h"
 
@@ -66,8 +66,8 @@ std::string HwcDisplay::Dump() {
 }
 
 HwcDisplay::HwcDisplay(hwc2_display_t handle, HWC2::DisplayType type,
-                       DrmHwcTwo *hwc2)
-    : hwc2_(hwc2), handle_(handle), type_(type), client_layer_(this) {
+                       DrmHwc *hwc)
+    : hwc_(hwc), handle_(handle), type_(type), client_layer_(this) {
   if (type_ == HWC2::DisplayType::Virtual) {
     writeback_layer_ = std::make_unique<HwcLayer>(this);
   }
@@ -85,7 +85,9 @@ void HwcDisplay::SetColorMarixToIdentity() {
   color_transform_hint_ = HAL_COLOR_TRANSFORM_IDENTITY;
 }
 
-HwcDisplay::~HwcDisplay() = default;
+HwcDisplay::~HwcDisplay() {
+  Deinit();
+};
 
 void HwcDisplay::SetPipeline(std::shared_ptr<DrmDisplayPipeline> pipeline) {
   Deinit();
@@ -94,9 +96,9 @@ void HwcDisplay::SetPipeline(std::shared_ptr<DrmDisplayPipeline> pipeline) {
 
   if (pipeline_ != nullptr || handle_ == kPrimaryDisplay) {
     Init();
-    hwc2_->ScheduleHotplugEvent(handle_, /*connected = */ true);
+    hwc_->ScheduleHotplugEvent(handle_, /*connected = */ true);
   } else {
-    hwc2_->ScheduleHotplugEvent(handle_, /*connected = */ false);
+    hwc_->ScheduleHotplugEvent(handle_, /*connected = */ false);
   }
 }
 
@@ -131,6 +133,8 @@ void HwcDisplay::Deinit() {
   }
 
   if (vsync_worker_) {
+    // TODO: There should be a mechanism to wait for this worker to complete,
+    // otherwise there is a race condition while destructing the HwcDisplay.
     vsync_worker_->StopThread();
     vsync_worker_ = {};
   }
@@ -144,11 +148,11 @@ HWC2::Error HwcDisplay::Init() {
   auto vsw_callbacks = (VSyncWorkerCallbacks){
       .out_event =
           [this](int64_t timestamp) {
-            const std::unique_lock lock(hwc2_->GetResMan().GetMainLock());
+            const std::unique_lock lock(hwc_->GetResMan().GetMainLock());
             if (vsync_event_en_) {
               uint32_t period_ns{};
               GetDisplayVsyncPeriod(&period_ns);
-              hwc2_->SendVsyncEventToClient(handle_, timestamp, period_ns);
+              hwc_->SendVsyncEventToClient(handle_, timestamp, period_ns);
             }
             if (vsync_tracking_en_) {
               last_vsync_ts_ = timestamp;
@@ -178,12 +182,8 @@ HWC2::Error HwcDisplay::Init() {
       ALOGE("Failed to set backend for d=%d %d\n", int(handle_), ret);
       return HWC2::Error::BadDisplay;
     }
-    auto flatcbk = (struct FlatConCallbacks){.trigger = [this]() {
-      if (hwc2_->refresh_callback_.first != nullptr &&
-          hwc2_->refresh_callback_.second != nullptr)
-        hwc2_->refresh_callback_.first(hwc2_->refresh_callback_.second,
-                                       handle_);
-    }};
+    auto flatcbk = (struct FlatConCallbacks){
+        .trigger = [this]() { hwc_->SendRefreshEventToClient(handle_); }};
     flatcon_ = FlatteningController::CreateInstance(flatcbk);
   }
 
@@ -310,7 +310,6 @@ HWC2::Error HwcDisplay::GetDisplayAttribute(hwc2_config_t config,
 
   static const int32_t kUmPerInch = 25400;
   auto mm_width = configs_.mm_width;
-  auto mm_height = configs_.mm_height;
   auto attribute = static_cast<HWC2::Attribute>(attribute_in);
   switch (attribute) {
     case HWC2::Attribute::Width:
@@ -323,17 +322,16 @@ HWC2::Error HwcDisplay::GetDisplayAttribute(hwc2_config_t config,
       // in nanoseconds
       *value = static_cast<int>(1E9 / hwc_config.mode.GetVRefresh());
       break;
+    case HWC2::Attribute::DpiY:
+      // ideally this should be vdisplay/mm_heigth, however mm_height
+      // comes from edid parsing and is highly unreliable. Viewing the
+      // rarity of anisotropic displays, falling back to a single value
+      // for dpi yield more correct output.
     case HWC2::Attribute::DpiX:
       // Dots per 1000 inches
       *value = mm_width ? int(hwc_config.mode.GetRawMode().hdisplay *
                               kUmPerInch / mm_width)
                         : -1;
-      break;
-    case HWC2::Attribute::DpiY:
-      // Dots per 1000 inches
-      *value = mm_height ? int(hwc_config.mode.GetRawMode().vdisplay *
-                               kUmPerInch / mm_height)
-                         : -1;
       break;
 #if __ANDROID_API__ > 29
     case HWC2::Attribute::ConfigGroup:
@@ -349,8 +347,8 @@ HWC2::Error HwcDisplay::GetDisplayAttribute(hwc2_config_t config,
   return HWC2::Error::None;
 }
 
-HWC2::Error HwcDisplay::GetDisplayConfigs(uint32_t *num_configs,
-                                          hwc2_config_t *configs) {
+HWC2::Error HwcDisplay::LegacyGetDisplayConfigs(uint32_t *num_configs,
+                                                hwc2_config_t *configs) {
   uint32_t idx = 0;
   for (auto &hwc_config : configs_.hwc_configs) {
     if (hwc_config.second.disabled) {
@@ -564,9 +562,9 @@ HWC2::Error HwcDisplay::CreateComposition(AtomicCommitArgs &a_args) {
     staged_mode_.reset();
     vsync_tracking_en_ = false;
     if (last_vsync_ts_ != 0) {
-      hwc2_->SendVsyncPeriodTimingChangedEventToClient(handle_,
-                                                       last_vsync_ts_ +
-                                                           prev_vperiod_ns);
+      hwc_->SendVsyncPeriodTimingChangedEventToClient(handle_,
+                                                      last_vsync_ts_ +
+                                                          prev_vperiod_ns);
     }
   }
 
@@ -731,7 +729,7 @@ bool HwcDisplay::CtmByGpu() {
   if (GetPipe().crtc->Get()->GetCtmProperty())
     return false;
 
-  if (GetHwc2()->GetResMan().GetCtmHandling() == CtmHandling::kDrmOrIgnore)
+  if (GetHwc()->GetResMan().GetCtmHandling() == CtmHandling::kDrmOrIgnore)
     return false;
 
   return true;
@@ -963,7 +961,7 @@ HWC2::Error HwcDisplay::GetDisplayCapabilities(uint32_t *outNumCapabilities,
   bool skip_ctm = false;
 
   // Skip client CTM if user requested DRM_OR_IGNORE
-  if (GetHwc2()->GetResMan().GetCtmHandling() == CtmHandling::kDrmOrIgnore)
+  if (GetHwc()->GetResMan().GetCtmHandling() == CtmHandling::kDrmOrIgnore)
     skip_ctm = true;
 
   // Skip client CTM if DRM can handle it
