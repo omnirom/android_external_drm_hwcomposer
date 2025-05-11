@@ -1,0 +1,44 @@
+#!/bin/bash
+
+# git pre-push hook to detect whether a developer is attempting to push
+# non-public commits to a public repository.
+
+remote="$1"
+url="$2"
+
+# Don't bother checking if this is being pushed to gerrit.
+if [[ "$url" = "sso://googleplex-android/platform/external/drm_hwcomposer" ]] ||
+   [[ "$url" = "sso://android.googlesource.com/platform/external/drm_hwcomposer" ]]
+then
+  exit 0
+fi
+
+while read local_ref local_sha remote_ref remote_sha
+do
+  # Gather a list of all commits that are to be pushed to the remote.
+  # remote_sha will be 000000 if there is no corresponding remote branch.
+  if [[ "$remote_sha" =~ "0000000000" ]]; then
+    commits=$(git rev-list $local_sha --not --remotes=$remote)
+  else
+    commits=$(git rev-list $remote_sha..$local_sha)
+  fi
+
+  # Check each commit message for the prohibited prefix.
+  for commit in $commits; do
+    # Get the commit message.
+    message=$(git log -1 --pretty=%B $commit)
+
+    # Check if the commit message starts with "ANDROID:"
+    if [[ "$message" == "ANDROID"* ]] ||
+       [[ "$message" == "INTERNAL"* ]] ||
+       [[ "$message" == "DO NOT MERGE"* ]]; then
+      echo "Error: Commit message starts with downstream tag:"
+      echo "$message"
+      echo "It looks like you're trying to push internal changes to an externally "
+      echo "visible repository: $url"
+      exit 1
+    fi
+  done
+done
+
+exit 0

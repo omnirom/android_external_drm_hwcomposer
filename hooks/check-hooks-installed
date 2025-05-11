@@ -1,0 +1,10 @@
+#!/bin/bash
+
+# Gerrit hook that runs on repo upload. Checks to ensure that the pre-upload hook
+# has been installed.
+
+cmd=$(git config hookcmd.check-non-public-commits.command)
+if [ -z "$cmd" ]; then
+  echo "Please install hooks by running: hooks/install-hooks.sh"
+  exit 1
+fi

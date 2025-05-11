@@ -21,6 +21,7 @@
 #include <memory>
 #include <optional>
 
+#include "compositor/DisplayInfo.h"
 #include "compositor/DrmKmsPlan.h"
 #include "compositor/LayerData.h"
 #include "drm/DrmPlane.h"
@@ -32,10 +33,13 @@ namespace android {
 struct AtomicCommitArgs {
   /* inputs. All fields are optional, but at least one has to be specified */
   bool test_only = false;
+  bool blocking = false;
   std::optional<DrmMode> display_mode;
   std::optional<bool> active;
   std::shared_ptr<DrmKmsPlan> composition;
   std::shared_ptr<drm_color_ctm> color_matrix;
+  std::optional<Colorspace> colorspace;
+  std::optional<int32_t> content_type;
 
   std::shared_ptr<DrmFbIdHandle> writeback_fb;
   SharedFd writeback_release_fence;

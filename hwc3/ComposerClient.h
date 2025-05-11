@@ -25,6 +25,7 @@
 #include "hwc3/Utils.h"
 #include "utils/Mutex.h"
 
+using AidlHdcpLevels = aidl::android::hardware::drm::HdcpLevels;
 using AidlPixelFormat = aidl::android::hardware::graphics::common::PixelFormat;
 using AidlNativeHandle = aidl::android::hardware::common::NativeHandle;
 
@@ -38,11 +39,6 @@ class HwcLayer;
 namespace aidl::android::hardware::graphics::composer3::impl {
 
 class DrmHwcThree;
-
-struct HwcLayerWrapper {
-  int64_t layer_id;
-  ::android::HwcLayer* layer;
-};
 
 class ComposerClient : public BnComposerClient {
  public:
@@ -136,6 +132,9 @@ class ComposerClient : public BnComposerClient {
   ndk::ScopedAStatus setVsyncEnabled(int64_t display, bool enabled) override;
   ndk::ScopedAStatus setIdleTimerEnabled(int64_t display,
                                          int32_t timeout) override;
+
+#if __ANDROID_API__ >= 34
+
   ndk::ScopedAStatus getOverlaySupport(
       OverlayProperties* out_overlay_properties) override;
   ndk::ScopedAStatus getHdrConversionCapabilities(
@@ -145,44 +144,40 @@ class ComposerClient : public BnComposerClient {
       common::Hdr* out_hdr) override;
   ndk::ScopedAStatus setRefreshRateChangedCallbackDebugEnabled(
       int64_t display, bool enabled) override;
+
+#endif
+
+#if __ANDROID_API__ >= 35
+
   ndk::ScopedAStatus getDisplayConfigurations(
       int64_t display, int32_t max_frame_interval_ns,
       std::vector<DisplayConfiguration>* configurations) override;
   ndk::ScopedAStatus notifyExpectedPresent(
       int64_t display, const ClockMonotonicTimestamp& expected_present_time,
       int32_t frame_interval_ns) override;
+  ndk::ScopedAStatus startHdcpNegotiation(int64_t display,
+      const AidlHdcpLevels& levels) override;
+
+#endif
+
+  ndk::ScopedAStatus getMaxLayerPictureProfiles(
+      int64_t display, int32_t* maxProfiles) override;
+  ndk::ScopedAStatus getLuts(int64_t, const std::vector<Buffer>&,
+                             std::vector<Luts>* out_luts) override;
 
  protected:
   ::ndk::SpAIBinder createBinder() override;
 
  private:
+  hwc3::Error ImportLayerBuffer(int64_t display_id, int64_t layer_id,
+                                const Buffer& buffer,
+                                buffer_handle_t* out_imported_buffer);
+
   // Layer commands
   void DispatchLayerCommand(int64_t display_id, const LayerCommand& command);
-  void ExecuteSetLayerBuffer(int64_t display_id, HwcLayerWrapper& layer_id,
-                             const Buffer& buffer);
-  void ExecuteSetLayerBlendMode(int64_t display_id, HwcLayerWrapper& layer,
-                                const ParcelableBlendMode& blend_mode);
-  void ExecuteSetLayerComposition(int64_t display_id, HwcLayerWrapper& layer,
-                                  const ParcelableComposition& composition);
-  void ExecuteSetLayerDataspace(int64_t display_id, HwcLayerWrapper& layer,
-                                const ParcelableDataspace& dataspace);
-  void ExecuteSetLayerDisplayFrame(int64_t display_id, HwcLayerWrapper& layer,
-                                   const common::Rect& rect);
-  void ExecuteSetLayerPlaneAlpha(int64_t display_id, HwcLayerWrapper& layer,
-                                 const PlaneAlpha& plane_alpha);
-  void ExecuteSetLayerSourceCrop(int64_t display_id, HwcLayerWrapper& layer,
-                                 const common::FRect& source_crop);
-  void ExecuteSetLayerTransform(int64_t display_id, HwcLayerWrapper& layer,
-                                const ParcelableTransform& transform);
-  void ExecuteSetLayerZOrder(int64_t display_id, HwcLayerWrapper& layer,
-                             const ZOrder& z_order);
-  void ExecuteSetLayerBrightness(int64_t display_id, HwcLayerWrapper& layer,
-                                 const LayerBrightness& brightness);
 
   // Display commands
   void ExecuteDisplayCommand(const DisplayCommand& command);
-  void ExecuteSetDisplayBrightness(uint64_t display_id,
-                                   const DisplayBrightness& command);
   void ExecuteSetDisplayColorTransform(uint64_t display_id,
                                        const std::vector<float>& matrix);
   void ExecuteSetDisplayClientTarget(uint64_t display_id,

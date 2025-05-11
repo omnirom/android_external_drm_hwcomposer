@@ -19,28 +19,31 @@
 
 #include "ComposerClient.h"
 
-#include <aidlcommonsupport/NativeHandle.h>
-#include <android-base/logging.h>
-#include <android/binder_ibinder_platform.h>
-#include <hardware/hwcomposer2.h>
-
 #include <cinttypes>
 #include <cmath>
 #include <memory>
 #include <unordered_map>
 #include <vector>
 
-#include "aidl/android/hardware/graphics/common/Transform.h"
-#include "aidl/android/hardware/graphics/composer3/ClientTarget.h"
-#include "aidl/android/hardware/graphics/composer3/Composition.h"
-#include "aidl/android/hardware/graphics/composer3/DisplayRequest.h"
-#include "aidl/android/hardware/graphics/composer3/IComposerClient.h"
-#include "aidl/android/hardware/graphics/composer3/PowerMode.h"
-#include "aidl/android/hardware/graphics/composer3/PresentOrValidate.h"
-#include "aidl/android/hardware/graphics/composer3/RenderIntent.h"
-#include "android/binder_auto_utils.h"
-#include "cutils/native_handle.h"
-#include "hardware/hwcomposer_defs.h"
+#include <aidl/android/hardware/graphics/common/Transform.h>
+#include <aidl/android/hardware/graphics/composer3/ClientTarget.h>
+#include <aidl/android/hardware/graphics/composer3/Composition.h>
+#include <aidl/android/hardware/graphics/composer3/DisplayRequest.h>
+#include <aidl/android/hardware/graphics/composer3/IComposerClient.h>
+#include <aidl/android/hardware/graphics/composer3/Luts.h>
+#include <aidl/android/hardware/graphics/composer3/PowerMode.h>
+#include <aidl/android/hardware/graphics/composer3/PresentOrValidate.h>
+#include <aidl/android/hardware/graphics/composer3/RenderIntent.h>
+#include <aidlcommonsupport/NativeHandle.h>
+#include <android-base/logging.h>
+#include <android/binder_auto_utils.h>
+#include <android/binder_ibinder_platform.h>
+#include <cutils/native_handle.h>
+#include <hardware/hwcomposer2.h>
+#include <hardware/hwcomposer_defs.h>
+
+#include "bufferinfo/BufferInfo.h"
+#include "compositor/DisplayInfo.h"
 #include "hwc2_device/HwcDisplay.h"
 #include "hwc2_device/HwcDisplayConfigs.h"
 #include "hwc2_device/HwcLayer.h"
@@ -48,7 +51,10 @@
 #include "hwc3/Utils.h"
 
 using ::android::HwcDisplay;
+using ::android::HwcDisplayConfig;
 using ::android::HwcDisplayConfigs;
+using ::android::HwcLayer;
+using ::android::LayerTransform;
 
 #include "utils/log.h"
 
@@ -63,6 +69,239 @@ constexpr std::array<float, 16> kIdentityMatrix = {
     0.0F, 0.0F, 0.0F, 1.0F,
 };
 // clang-format on
+
+std::optional<BufferBlendMode> AidlToBlendMode(
+    const std::optional<ParcelableBlendMode>& aidl_blend_mode) {
+  if (!aidl_blend_mode) {
+    return std::nullopt;
+  }
+
+  switch (aidl_blend_mode->blendMode) {
+    case common::BlendMode::NONE:
+      return BufferBlendMode::kNone;
+    case common::BlendMode::PREMULTIPLIED:
+      return BufferBlendMode::kPreMult;
+    case common::BlendMode::COVERAGE:
+      return BufferBlendMode::kCoverage;
+    case common::BlendMode::INVALID:
+      ALOGE("Invalid BlendMode");
+      return std::nullopt;
+  }
+}
+
+std::optional<BufferColorSpace> AidlToColorSpace(
+    const std::optional<ParcelableDataspace>& dataspace) {
+  if (!dataspace) {
+    return std::nullopt;
+  }
+
+  int32_t standard = static_cast<int32_t>(dataspace->dataspace) &
+                     static_cast<int32_t>(common::Dataspace::STANDARD_MASK);
+  switch (standard) {
+    case static_cast<int32_t>(common::Dataspace::STANDARD_BT709):
+      return BufferColorSpace::kItuRec709;
+    case static_cast<int32_t>(common::Dataspace::STANDARD_BT601_625):
+    case static_cast<int32_t>(common::Dataspace::STANDARD_BT601_625_UNADJUSTED):
+    case static_cast<int32_t>(common::Dataspace::STANDARD_BT601_525):
+    case static_cast<int32_t>(common::Dataspace::STANDARD_BT601_525_UNADJUSTED):
+      return BufferColorSpace::kItuRec601;
+    case static_cast<int32_t>(common::Dataspace::STANDARD_BT2020):
+    case static_cast<int32_t>(
+        common::Dataspace::STANDARD_BT2020_CONSTANT_LUMINANCE):
+      return BufferColorSpace::kItuRec2020;
+    case static_cast<int32_t>(common::Dataspace::UNKNOWN):
+      return BufferColorSpace::kUndefined;
+    default:
+      ALOGE("Unsupported standard: %d", standard);
+      return std::nullopt;
+  }
+}
+
+std::optional<BufferSampleRange> AidlToSampleRange(
+    const std::optional<ParcelableDataspace>& dataspace) {
+  if (!dataspace) {
+    return std::nullopt;
+  }
+
+  int32_t sample_range = static_cast<int32_t>(dataspace->dataspace) &
+                         static_cast<int32_t>(common::Dataspace::RANGE_MASK);
+  switch (sample_range) {
+    case static_cast<int32_t>(common::Dataspace::RANGE_FULL):
+      return BufferSampleRange::kFullRange;
+    case static_cast<int32_t>(common::Dataspace::RANGE_LIMITED):
+      return BufferSampleRange::kLimitedRange;
+    case static_cast<int32_t>(common::Dataspace::UNKNOWN):
+      return BufferSampleRange::kUndefined;
+    default:
+      ALOGE("Unsupported sample range: %d", sample_range);
+      return std::nullopt;
+  }
+}
+
+bool IsSupportedCompositionType(
+    const std::optional<ParcelableComposition> composition) {
+  if (!composition) {
+    return true;
+  }
+  switch (composition->composition) {
+    case Composition::INVALID:
+    case Composition::CLIENT:
+    case Composition::DEVICE:
+    case Composition::SOLID_COLOR:
+    case Composition::CURSOR:
+      return true;
+
+    // Unsupported composition types. Set an error for the current
+    // DisplayCommand and return.
+    case Composition::DISPLAY_DECORATION:
+    case Composition::SIDEBAND:
+#if __ANDROID_API__ >= 34
+    case Composition::REFRESH_RATE_INDICATOR:
+#endif
+      return false;
+  }
+}
+
+bool ValidateLayerBrightness(const std::optional<LayerBrightness>& brightness) {
+  if (!brightness) {
+    return true;
+  }
+  return !(std::signbit(brightness->brightness) ||
+           std::isnan(brightness->brightness));
+}
+
+std::optional<HWC2::Composition> AidlToCompositionType(
+    const std::optional<ParcelableComposition> composition) {
+  if (!composition) {
+    return std::nullopt;
+  }
+
+  switch (composition->composition) {
+    case Composition::INVALID:
+      return HWC2::Composition::Invalid;
+    case Composition::CLIENT:
+      return HWC2::Composition::Client;
+    case Composition::DEVICE:
+      return HWC2::Composition::Device;
+    case Composition::SOLID_COLOR:
+      return HWC2::Composition::SolidColor;
+    case Composition::CURSOR:
+      return HWC2::Composition::Cursor;
+
+    // Unsupported composition types.
+    case Composition::DISPLAY_DECORATION:
+    case Composition::SIDEBAND:
+#if __ANDROID_API__ >= 34
+    case Composition::REFRESH_RATE_INDICATOR:
+#endif
+      ALOGE("Unsupported composition type: %s",
+            toString(composition->composition).c_str());
+      return std::nullopt;
+  }
+}
+
+#if __ANDROID_API__ < 35
+
+class DisplayConfiguration {
+ public:
+  class Dpi {
+   public:
+    float x = 0.000000F;
+    float y = 0.000000F;
+  };
+  // NOLINTNEXTLINE(readability-identifier-naming)
+  int32_t configId = 0;
+  int32_t width = 0;
+  int32_t height = 0;
+  std::optional<Dpi> dpi;
+  // NOLINTNEXTLINE(readability-identifier-naming)
+  int32_t configGroup = 0;
+  // NOLINTNEXTLINE(readability-identifier-naming)
+  int32_t vsyncPeriod = 0;
+};
+
+#endif
+
+DisplayConfiguration HwcDisplayConfigToAidlConfiguration(
+    const HwcDisplayConfigs& configs, const HwcDisplayConfig& config) {
+  DisplayConfiguration aidl_configuration =
+      {.configId = static_cast<int32_t>(config.id),
+       .width = config.mode.GetRawMode().hdisplay,
+       .height = config.mode.GetRawMode().vdisplay,
+       .configGroup = static_cast<int32_t>(config.group_id),
+       .vsyncPeriod = config.mode.GetVSyncPeriodNs()};
+
+  if (configs.mm_width != 0) {
+    // ideally this should be vdisplay/mm_heigth, however mm_height
+    // comes from edid parsing and is highly unreliable. Viewing the
+    // rarity of anisotropic displays, falling back to a single value
+    // for dpi yield more correct output.
+    static const float kMmPerInch = 25.4;
+    float dpi = float(config.mode.GetRawMode().hdisplay) * kMmPerInch /
+                float(configs.mm_width);
+    aidl_configuration.dpi = {.x = dpi, .y = dpi};
+  }
+  // TODO: Populate vrrConfig.
+  return aidl_configuration;
+}
+
+std::optional<hwc_rect> AidlToRect(const std::optional<common::Rect>& rect) {
+  if (!rect) {
+    return std::nullopt;
+  }
+  return hwc_rect{rect->left, rect->top, rect->right, rect->bottom};
+}
+
+std::optional<hwc_frect> AidlToFRect(const std::optional<common::FRect>& rect) {
+  if (!rect) {
+    return std::nullopt;
+  }
+  return hwc_frect{rect->left, rect->top, rect->right, rect->bottom};
+}
+
+std::optional<float> AidlToAlpha(const std::optional<PlaneAlpha>& alpha) {
+  if (!alpha) {
+    return std::nullopt;
+  }
+  return alpha->alpha;
+}
+
+std::optional<uint32_t> AidlToZOrder(const std::optional<ZOrder>& z_order) {
+  if (!z_order) {
+    return std::nullopt;
+  }
+  return z_order->z;
+}
+
+std::optional<LayerTransform> AidlToLayerTransform(
+    const std::optional<ParcelableTransform>& aidl_transform) {
+  if (!aidl_transform) {
+    return std::nullopt;
+  }
+
+  uint32_t transform = LayerTransform::kIdentity;
+  // 270* and 180* cannot be combined with flips. More specifically, they
+  // already contain both horizontal and vertical flips, so those fields are
+  // redundant in this case. 90* rotation can be combined with either horizontal
+  // flip or vertical flip, so treat it differently
+  if (aidl_transform->transform == common::Transform::ROT_270) {
+    transform = LayerTransform::kRotate270;
+  } else if (aidl_transform->transform == common::Transform::ROT_180) {
+    transform = LayerTransform::kRotate180;
+  } else {
+    auto aidl_transform_bits = static_cast<uint32_t>(aidl_transform->transform);
+    if ((aidl_transform_bits &
+         static_cast<uint32_t>(common::Transform::FLIP_H)) != 0)
+      transform |= LayerTransform::kFlipH;
+    if ((aidl_transform_bits &
+         static_cast<uint32_t>(common::Transform::FLIP_V)) != 0)
+      transform |= LayerTransform::kFlipV;
+    if ((aidl_transform_bits &
+         static_cast<uint32_t>(common::Transform::ROT_90)) != 0)
+      transform |= LayerTransform::kRotate90;
+  }
+  return static_cast<LayerTransform>(transform);
+}
 
 }  // namespace
 
@@ -202,9 +441,15 @@ hwc3::Error ComposerClient::ValidateDisplayInternal(
     return Hwc2toHwc3Error(hwc2_error);
   }
 
+  hwc3::Error error = Hwc2toHwc3Error(
+      display.GetChangedCompositionTypes(&num_types, nullptr, nullptr));
+  if (error != hwc3::Error::kNone) {
+    return error;
+  }
+
   std::vector<hwc2_layer_t> hwc_changed_layers(num_types);
   std::vector<int32_t> hwc_composition_types(num_types);
-  hwc3::Error error = Hwc2toHwc3Error(
+  error = Hwc2toHwc3Error(
       display.GetChangedCompositionTypes(&num_types, hwc_changed_layers.data(),
                                          hwc_composition_types.data()));
   if (error != hwc3::Error::kNone) {
@@ -300,44 +545,54 @@ void ComposerClient::DispatchLayerCommand(int64_t display_id,
     return;
   }
 
-  HwcLayerWrapper layer_wrapper{command.layer, layer};
+  // If the requested composition type is not supported, the HWC should return
+  // an error and not process any further commands.
+  if (!IsSupportedCompositionType(command.composition)) {
+    cmd_result_writer_->AddError(hwc3::Error::kUnsupported);
+    return;
+  }
+
+  // For some invalid parameters, the HWC should return an error and not process
+  // any further commands.
+  if (!ValidateLayerBrightness(command.brightness)) {
+    cmd_result_writer_->AddError(hwc3::Error::kBadParameter);
+    return;
+  }
+
+  HwcLayer::LayerProperties properties;
   if (command.buffer) {
-    ExecuteSetLayerBuffer(display_id, layer_wrapper, *command.buffer);
+    HwcLayer::Buffer buffer;
+    auto err = ImportLayerBuffer(display_id, command.layer, *command.buffer,
+                                 &buffer.buffer_handle);
+    if (err != hwc3::Error::kNone) {
+      cmd_result_writer_->AddError(err);
+      return;
+    }
+    buffer.acquire_fence = ::android::MakeSharedFd(
+        command.buffer->fence.dup().release());
+    properties.buffer.emplace(buffer);
   }
-  if (command.blendMode) {
-    ExecuteSetLayerBlendMode(display_id, layer_wrapper, *command.blendMode);
-  }
-  if (command.composition) {
-    ExecuteSetLayerComposition(display_id, layer_wrapper, *command.composition);
-  }
-  if (command.dataspace) {
-    ExecuteSetLayerDataspace(display_id, layer_wrapper, *command.dataspace);
-  }
-  if (command.displayFrame) {
-    ExecuteSetLayerDisplayFrame(display_id, layer_wrapper,
-                                *command.displayFrame);
-  }
-  if (command.planeAlpha) {
-    ExecuteSetLayerPlaneAlpha(display_id, layer_wrapper, *command.planeAlpha);
-  }
-  if (command.sourceCrop) {
-    ExecuteSetLayerSourceCrop(display_id, layer_wrapper, *command.sourceCrop);
-  }
-  if (command.transform) {
-    ExecuteSetLayerTransform(display_id, layer_wrapper, *command.transform);
-  }
-  if (command.z) {
-    ExecuteSetLayerZOrder(display_id, layer_wrapper, *command.z);
-  }
-  if (command.brightness) {
-    ExecuteSetLayerBrightness(display_id, layer_wrapper, *command.brightness);
-  }
+
+  properties.blend_mode = AidlToBlendMode(command.blendMode);
+  properties.color_space = AidlToColorSpace(command.dataspace);
+  properties.sample_range = AidlToSampleRange(command.dataspace);
+  properties.composition_type = AidlToCompositionType(command.composition);
+  properties.display_frame = AidlToRect(command.displayFrame);
+  properties.alpha = AidlToAlpha(command.planeAlpha);
+  properties.source_crop = AidlToFRect(command.sourceCrop);
+  properties.transform = AidlToLayerTransform(command.transform);
+  properties.z_order = AidlToZOrder(command.z);
+
+  layer->SetLayerProperties(properties);
 
   // Some unsupported functionality returns kUnsupported, and others
   // are just a no-op.
   // TODO: Audit whether some of these should actually return kUnsupported
   // instead.
   if (command.sidebandStream) {
+    cmd_result_writer_->AddError(hwc3::Error::kUnsupported);
+  }
+  if (command.luts) {
     cmd_result_writer_->AddError(hwc3::Error::kUnsupported);
   }
   // TODO: Blocking region handling missing.
@@ -356,13 +611,16 @@ void ComposerClient::ExecuteDisplayCommand(const DisplayCommand& command) {
     return;
   }
 
+  if (command.brightness) {
+    // TODO: Implement support for display brightness.
+    cmd_result_writer_->AddError(hwc3::Error::kUnsupported);
+    return;
+  }
+
   for (const auto& layer_cmd : command.layers) {
     DispatchLayerCommand(command.display, layer_cmd);
   }
 
-  if (command.brightness) {
-    ExecuteSetDisplayBrightness(command.display, *command.brightness);
-  }
   if (command.colorTransformMatrix) {
     ExecuteSetDisplayColorTransform(command.display,
                                     *command.colorTransformMatrix);
@@ -405,7 +663,7 @@ ndk::ScopedAStatus ComposerClient::executeCommands(
 }
 
 ndk::ScopedAStatus ComposerClient::getActiveConfig(int64_t display_id,
-                                                   int32_t* config) {
+                                                   int32_t* config_id) {
   DEBUG_FUNC();
   const std::unique_lock lock(hwc_->GetResMan().GetMainLock());
   HwcDisplay* display = GetDisplay(display_id);
@@ -413,13 +671,12 @@ ndk::ScopedAStatus ComposerClient::getActiveConfig(int64_t display_id,
     return ToBinderStatus(hwc3::Error::kBadDisplay);
   }
 
-  uint32_t hwc2_config = 0;
-  const hwc3::Error error = Hwc2toHwc3Error(
-      display->GetActiveConfig(&hwc2_config));
-  if (error != hwc3::Error::kNone) {
-    return ToBinderStatus(error);
+  const HwcDisplayConfig* config = display->GetLastRequestedConfig();
+  if (config == nullptr) {
+    return ToBinderStatus(hwc3::Error::kBadConfig);
   }
-  *config = Hwc2ConfigIdToHwc3(hwc2_config);
+
+  *config_id = Hwc2ConfigIdToHwc3(config->id);
   return ndk::ScopedAStatus::ok();
 }
 
@@ -467,7 +724,7 @@ ndk::ScopedAStatus ComposerClient::getDataspaceSaturationMatrix(
 }
 
 ndk::ScopedAStatus ComposerClient::getDisplayAttribute(
-    int64_t display_id, int32_t config, DisplayAttribute attribute,
+    int64_t display_id, int32_t config_id, DisplayAttribute attribute,
     int32_t* value) {
   DEBUG_FUNC();
   const std::unique_lock lock(hwc_->GetResMan().GetMainLock());
@@ -476,11 +733,46 @@ ndk::ScopedAStatus ComposerClient::getDisplayAttribute(
     return ToBinderStatus(hwc3::Error::kBadDisplay);
   }
 
-  const hwc3::Error error = Hwc2toHwc3Error(
-      display->GetDisplayAttribute(Hwc3ConfigIdToHwc2(config),
-                                   Hwc3DisplayAttributeToHwc2(attribute),
-                                   value));
-  return ToBinderStatus(error);
+  const HwcDisplayConfigs& configs = display->GetDisplayConfigs();
+  auto config = configs.hwc_configs.find(config_id);
+  if (config == configs.hwc_configs.end()) {
+    return ToBinderStatus(hwc3::Error::kBadConfig);
+  }
+
+  DisplayConfiguration
+      aidl_configuration = HwcDisplayConfigToAidlConfiguration(configs,
+                                                               config->second);
+  // Legacy API for querying DPI uses units of dots per 1000 inches.
+  static const int kLegacyDpiUnit = 1000;
+  switch (attribute) {
+    case DisplayAttribute::WIDTH:
+      *value = aidl_configuration.width;
+      break;
+    case DisplayAttribute::HEIGHT:
+      *value = aidl_configuration.height;
+      break;
+    case DisplayAttribute::VSYNC_PERIOD:
+      *value = aidl_configuration.vsyncPeriod;
+      break;
+    case DisplayAttribute::DPI_X:
+      *value = aidl_configuration.dpi
+                   ? static_cast<int>(aidl_configuration.dpi->x *
+                                      kLegacyDpiUnit)
+                   : -1;
+      break;
+    case DisplayAttribute::DPI_Y:
+      *value = aidl_configuration.dpi
+                   ? static_cast<int>(aidl_configuration.dpi->y *
+                                      kLegacyDpiUnit)
+                   : -1;
+      break;
+    case DisplayAttribute::CONFIG_GROUP:
+      *value = aidl_configuration.configGroup;
+      break;
+    case DisplayAttribute::INVALID:
+      return ToBinderStatus(hwc3::Error::kUnsupported);
+  }
+  return ndk::ScopedAStatus::ok();
 }
 
 ndk::ScopedAStatus ComposerClient::getDisplayCapabilities(
@@ -514,7 +806,7 @@ ndk::ScopedAStatus ComposerClient::getDisplayCapabilities(
 }
 
 ndk::ScopedAStatus ComposerClient::getDisplayConfigs(
-    int64_t display_id, std::vector<int32_t>* configs) {
+    int64_t display_id, std::vector<int32_t>* out_configs) {
   DEBUG_FUNC();
   const std::unique_lock lock(hwc_->GetResMan().GetMainLock());
   HwcDisplay* display = GetDisplay(display_id);
@@ -522,23 +814,9 @@ ndk::ScopedAStatus ComposerClient::getDisplayConfigs(
     return ToBinderStatus(hwc3::Error::kBadDisplay);
   }
 
-  uint32_t num_configs = 0;
-  hwc3::Error error = Hwc2toHwc3Error(
-      display->LegacyGetDisplayConfigs(&num_configs, nullptr));
-  if (error != hwc3::Error::kNone) {
-    return ToBinderStatus(error);
-  }
-
-  std::vector<hwc2_config_t> out_configs(num_configs);
-  error = Hwc2toHwc3Error(
-      display->LegacyGetDisplayConfigs(&num_configs, out_configs.data()));
-  if (error != hwc3::Error::kNone) {
-    return ToBinderStatus(error);
-  }
-
-  configs->reserve(num_configs);
-  for (const auto config : out_configs) {
-    configs->emplace_back(Hwc2ConfigIdToHwc3(config));
+  const HwcDisplayConfigs& configs = display->GetDisplayConfigs();
+  for (const auto& [id, config] : configs.hwc_configs) {
+    out_configs->push_back(static_cast<int32_t>(id));
   }
   return ndk::ScopedAStatus::ok();
 }
@@ -621,14 +899,15 @@ ndk::ScopedAStatus ComposerClient::getDisplayVsyncPeriod(
     return ToBinderStatus(hwc3::Error::kBadDisplay);
   }
 
-  uint32_t hwc2_vsync_period = 0;
-  auto error = Hwc2toHwc3Error(
-      display->GetDisplayVsyncPeriod(&hwc2_vsync_period));
-  if (error != hwc3::Error::kNone) {
-    return ToBinderStatus(error);
+  // getDisplayVsyncPeriod should return the vsync period of the config that
+  // is currently committed to the kernel. If a config change is pending due to
+  // setActiveConfigWithConstraints, return the pre-change vsync period.
+  const HwcDisplayConfig* config = display->GetCurrentConfig();
+  if (config == nullptr) {
+    return ToBinderStatus(hwc3::Error::kBadConfig);
   }
 
-  *vsync_period = static_cast<int32_t>(hwc2_vsync_period);
+  *vsync_period = config->mode.GetVSyncPeriodNs();
   return ndk::ScopedAStatus::ok();
 }
 
@@ -648,13 +927,40 @@ ndk::ScopedAStatus ComposerClient::getDisplayedContentSamplingAttributes(
 ndk::ScopedAStatus ComposerClient::getDisplayPhysicalOrientation(
     int64_t display_id, common::Transform* orientation) {
   DEBUG_FUNC();
+
+  if (orientation == nullptr) {
+    ALOGE("Invalid 'orientation' pointer.");
+    return ToBinderStatus(hwc3::Error::kBadParameter);
+  }
+
   const std::unique_lock lock(hwc_->GetResMan().GetMainLock());
   HwcDisplay* display = GetDisplay(display_id);
   if (display == nullptr) {
     return ToBinderStatus(hwc3::Error::kBadDisplay);
   }
 
-  *orientation = common::Transform::NONE;
+  PanelOrientation
+      drm_orientation = display->getDisplayPhysicalOrientation().value_or(
+          PanelOrientation::kModePanelOrientationNormal);
+
+  switch (drm_orientation) {
+    case PanelOrientation::kModePanelOrientationNormal:
+      *orientation = common::Transform::NONE;
+      break;
+    case PanelOrientation::kModePanelOrientationBottomUp:
+      *orientation = common::Transform::ROT_180;
+      break;
+    case PanelOrientation::kModePanelOrientationLeftUp:
+      *orientation = common::Transform::ROT_270;
+      break;
+    case PanelOrientation::kModePanelOrientationRightUp:
+      *orientation = common::Transform::ROT_90;
+      break;
+    default:
+      ALOGE("Unknown panel orientation value: %d", drm_orientation);
+      return ToBinderStatus(hwc3::Error::kBadDisplay);
+  }
+
   return ndk::ScopedAStatus::ok();
 }
 
@@ -738,24 +1044,8 @@ ndk::ScopedAStatus ComposerClient::getSupportedContentTypes(
     return ToBinderStatus(hwc3::Error::kBadDisplay);
   }
 
-  uint32_t out_num_supported_types = 0;
-  auto error = Hwc2toHwc3Error(
-      display->GetSupportedContentTypes(&out_num_supported_types, nullptr));
-  if (error != hwc3::Error::kNone) {
-    return ToBinderStatus(error);
-  }
-
-  std::vector<uint32_t> out_supported_types(out_num_supported_types);
-  error = Hwc2toHwc3Error(
-      display->GetSupportedContentTypes(&out_num_supported_types,
-                                        out_supported_types.data()));
-  if (error != hwc3::Error::kNone) {
-    return ToBinderStatus(error);
-  }
-
-  for (const auto type : out_supported_types) {
-    types->push_back(Hwc2ContentTypeToHwc3(type));
-  }
+  // Support for ContentType is not implemented.
+  types->clear();
   return ndk::ScopedAStatus::ok();
 }
 
@@ -778,13 +1068,14 @@ ndk::ScopedAStatus ComposerClient::registerCallback(
 ndk::ScopedAStatus ComposerClient::setActiveConfig(int64_t display_id,
                                                    int32_t config) {
   DEBUG_FUNC();
-  const std::unique_lock lock(hwc_->GetResMan().GetMainLock());
-  HwcDisplay* display = GetDisplay(display_id);
-  if (display == nullptr) {
-    return ToBinderStatus(hwc3::Error::kBadDisplay);
-  }
 
-  return ToBinderStatus(Hwc2toHwc3Error(display->SetActiveConfig(config)));
+  VsyncPeriodChangeTimeline timeline;
+  VsyncPeriodChangeConstraints constraints = {
+      .desiredTimeNanos = ::android::ResourceManager::GetTimeMonotonicNs(),
+      .seamlessRequired = false,
+  };
+  return setActiveConfigWithConstraints(display_id, config, constraints,
+                                        &timeline);
 }
 
 ndk::ScopedAStatus ComposerClient::setActiveConfigWithConstraints(
@@ -798,23 +1089,47 @@ ndk::ScopedAStatus ComposerClient::setActiveConfigWithConstraints(
     return ToBinderStatus(hwc3::Error::kBadDisplay);
   }
 
-  hwc_vsync_period_change_constraints_t hwc2_constraints;
-  hwc2_constraints.desiredTimeNanos = constraints.desiredTimeNanos;
-  hwc2_constraints.seamlessRequired = static_cast<uint8_t>(
-      constraints.seamlessRequired);
-
-  hwc_vsync_period_change_timeline_t hwc2_timeline{};
-  auto error = Hwc2toHwc3Error(
-      display->SetActiveConfigWithConstraints(config, &hwc2_constraints,
-                                              &hwc2_timeline));
-  if (error != hwc3::Error::kNone) {
-    return ToBinderStatus(error);
+  if (constraints.seamlessRequired) {
+    return ToBinderStatus(hwc3::Error::kSeamlessNotAllowed);
   }
 
-  timeline->refreshTimeNanos = hwc2_timeline.refreshTimeNanos;
-  timeline->newVsyncAppliedTimeNanos = hwc2_timeline.newVsyncAppliedTimeNanos;
-  timeline->refreshRequired = static_cast<bool>(hwc2_timeline.refreshRequired);
-  return ndk::ScopedAStatus::ok();
+  const bool future_config = constraints.desiredTimeNanos >
+                             ::android::ResourceManager::GetTimeMonotonicNs();
+  const HwcDisplayConfig* current_config = display->GetCurrentConfig();
+  const HwcDisplayConfig* next_config = display->GetConfig(config);
+  const bool same_config_group = current_config != nullptr &&
+                                 next_config != nullptr &&
+                                 current_config->group_id ==
+                                     next_config->group_id;
+  // If the contraints dictate that this is to be applied in the future, it
+  // must be queued. If the new config is in the same config group as the
+  // current one, then queue it to reduce jank.
+  HwcDisplay::ConfigError result{};
+  if (future_config || same_config_group) {
+    QueuedConfigTiming timing = {};
+    result = display->QueueConfig(config, constraints.desiredTimeNanos,
+                                  constraints.seamlessRequired, &timing);
+    timeline->newVsyncAppliedTimeNanos = timing.new_vsync_time_ns;
+    timeline->refreshTimeNanos = timing.refresh_time_ns;
+    timeline->refreshRequired = true;
+  } else {
+    // Fall back to a blocking commit, which may modeset.
+    result = display->SetConfig(config);
+    timeline->newVsyncAppliedTimeNanos = ::android::ResourceManager::
+        GetTimeMonotonicNs();
+    timeline->refreshRequired = false;
+  }
+
+  switch (result) {
+    case HwcDisplay::ConfigError::kBadConfig:
+      return ToBinderStatus(hwc3::Error::kBadConfig);
+    case HwcDisplay::ConfigError::kSeamlessNotAllowed:
+      return ToBinderStatus(hwc3::Error::kSeamlessNotAllowed);
+    case HwcDisplay::ConfigError::kSeamlessNotPossible:
+      return ToBinderStatus(hwc3::Error::kSeamlessNotPossible);
+    case HwcDisplay::ConfigError::kNone:
+      return ndk::ScopedAStatus::ok();
+  }
 }
 
 ndk::ScopedAStatus ComposerClient::setBootDisplayConfig(int64_t /*display_id*/,
@@ -879,8 +1194,10 @@ ndk::ScopedAStatus ComposerClient::setContentType(int64_t display_id,
     return ToBinderStatus(hwc3::Error::kBadDisplay);
   }
 
-  auto error = display->SetContentType(Hwc3ContentTypeToHwc2(type));
-  return ToBinderStatus(Hwc2toHwc3Error(error));
+  if (type == ContentType::NONE) {
+    return ndk::ScopedAStatus::ok();
+  }
+  return ToBinderStatus(hwc3::Error::kUnsupported);
 }
 
 ndk::ScopedAStatus ComposerClient::setDisplayedContentSamplingEnabled(
@@ -933,6 +1250,8 @@ ndk::ScopedAStatus ComposerClient::setIdleTimerEnabled(int64_t /*display_id*/,
   return ToBinderStatus(hwc3::Error::kUnsupported);
 }
 
+#if __ANDROID_API__ >= 34
+
 ndk::ScopedAStatus ComposerClient::getOverlaySupport(
     OverlayProperties* /*out_overlay_properties*/) {
   return ToBinderStatus(hwc3::Error::kUnsupported);
@@ -954,6 +1273,10 @@ ndk::ScopedAStatus ComposerClient::setRefreshRateChangedCallbackDebugEnabled(
   return ToBinderStatus(hwc3::Error::kUnsupported);
 }
 
+#endif
+
+#if __ANDROID_API__ >= 35
+
 ndk::ScopedAStatus ComposerClient::getDisplayConfigurations(
     int64_t display_id, int32_t /*max_frame_interval_ns*/,
     std::vector<DisplayConfiguration>* configurations) {
@@ -966,28 +1289,8 @@ ndk::ScopedAStatus ComposerClient::getDisplayConfigurations(
 
   const HwcDisplayConfigs& configs = display->GetDisplayConfigs();
   for (const auto& [id, config] : configs.hwc_configs) {
-    static const int kNanosecondsPerSecond = 1E9;
-    configurations->emplace_back(
-        DisplayConfiguration{.configId = static_cast<int32_t>(config.id),
-                             .width = config.mode.GetRawMode().hdisplay,
-                             .height = config.mode.GetRawMode().vdisplay,
-                             .configGroup = static_cast<int32_t>(
-                                 config.group_id),
-                             .vsyncPeriod = static_cast<int>(kNanosecondsPerSecond * double(
-                                 1 / config.mode.GetVRefresh()))});
-
-    if (configs.mm_width != 0) {
-      // ideally this should be vdisplay/mm_heigth, however mm_height
-      // comes from edid parsing and is highly unreliable. Viewing the
-      // rarity of anisotropic displays, falling back to a single value
-      // for dpi yield more correct output.
-      static const float kMmPerInch = 25.4;
-      float dpi = float(config.mode.GetRawMode().hdisplay) * kMmPerInch /
-                  float(configs.mm_width);
-      configurations->back().dpi = {.x = dpi, .y = dpi};
-    }
-
-    // TODO: Populate vrrConfig.
+    configurations->push_back(
+        HwcDisplayConfigToAidlConfiguration(configs, config));
   }
   return ndk::ScopedAStatus::ok();
 }
@@ -995,6 +1298,22 @@ ndk::ScopedAStatus ComposerClient::getDisplayConfigurations(
 ndk::ScopedAStatus ComposerClient::notifyExpectedPresent(
     int64_t /*display*/, const ClockMonotonicTimestamp& /*expected_present_time*/,
     int32_t /*frame_interval_ns*/) {
+  return ToBinderStatus(hwc3::Error::kUnsupported);
+}
+
+ndk::ScopedAStatus ComposerClient::startHdcpNegotiation(
+    int64_t /*display*/, const AidlHdcpLevels& /*levels*/) {
+  return ToBinderStatus(hwc3::Error::kUnsupported);
+}
+
+#endif
+
+ndk::ScopedAStatus ComposerClient::getMaxLayerPictureProfiles(int64_t, int32_t*) {
+  return ToBinderStatus(hwc3::Error::kUnsupported);
+}
+
+ndk::ScopedAStatus ComposerClient::getLuts(int64_t, const std::vector<Buffer>&,
+    std::vector<Luts>*) {
   return ToBinderStatus(hwc3::Error::kUnsupported);
 }
 
@@ -1013,139 +1332,18 @@ std::string ComposerClient::Dump() {
   return binder;
 }
 
-void ComposerClient::ExecuteSetLayerBuffer(int64_t display_id,
-                                           HwcLayerWrapper& layer,
-                                           const Buffer& buffer) {
-  buffer_handle_t imported_buffer = nullptr;
+hwc3::Error ComposerClient::ImportLayerBuffer(
+    int64_t display_id, int64_t layer_id, const Buffer& buffer,
+    buffer_handle_t* out_imported_buffer) {
+  *out_imported_buffer = nullptr;
 
   auto releaser = composer_resources_->CreateResourceReleaser(true);
-  auto err = composer_resources_->GetLayerBuffer(display_id, layer.layer_id,
-                                                 buffer, &imported_buffer,
+  auto err = composer_resources_->GetLayerBuffer(display_id, layer_id, buffer,
+                                                 out_imported_buffer,
                                                  releaser.get());
-  if (err != hwc3::Error::kNone) {
-    cmd_result_writer_->AddError(err);
-    return;
-  }
-
-  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
-  auto fence_fd = const_cast<ndk::ScopedFileDescriptor&>(buffer.fence)
-                      .release();
-  err = Hwc2toHwc3Error(layer.layer->SetLayerBuffer(imported_buffer, fence_fd));
-  if (err != hwc3::Error::kNone) {
-    cmd_result_writer_->AddError(err);
-  }
+  return err;
 }
 
-void ComposerClient::ExecuteSetLayerBlendMode(
-    int64_t /*display_id*/, HwcLayerWrapper& layer,
-    const ParcelableBlendMode& blend_mode) {
-  auto err = Hwc2toHwc3Error(layer.layer->SetLayerBlendMode(
-      Hwc3BlendModeToHwc2(blend_mode.blendMode)));
-  if (err != hwc3::Error::kNone) {
-    cmd_result_writer_->AddError(err);
-  }
-}
-
-void ComposerClient::ExecuteSetLayerComposition(
-    int64_t /*display_id*/, HwcLayerWrapper& layer,
-    const ParcelableComposition& composition) {
-  hwc3::Error error = hwc3::Error::kNone;
-  switch (composition.composition) {
-      // Unsupported composition types should set an error for the current
-      // DisplayCommand.
-    case Composition::DISPLAY_DECORATION:
-    case Composition::SIDEBAND:
-      error = hwc3::Error::kUnsupported;
-      break;
-    default:
-      error = Hwc2toHwc3Error(layer.layer->SetLayerCompositionType(
-          Hwc3CompositionToHwc2(composition.composition)));
-  }
-  if (error != hwc3::Error::kNone) {
-    cmd_result_writer_->AddError(error);
-  }
-}
-
-void ComposerClient::ExecuteSetLayerDataspace(
-    int64_t /*display_id*/, HwcLayerWrapper& layer,
-    const ParcelableDataspace& dataspace) {
-  auto err = Hwc2toHwc3Error(
-      layer.layer->SetLayerDataspace(Hwc3DataspaceToHwc2(dataspace.dataspace)));
-  if (err != hwc3::Error::kNone) {
-    cmd_result_writer_->AddError(err);
-  }
-}
-
-void ComposerClient::ExecuteSetLayerDisplayFrame(int64_t /*display_id*/,
-                                                 HwcLayerWrapper& layer,
-                                                 const common::Rect& rect) {
-  const hwc_rect_t hwc2_rect{rect.left, rect.top, rect.right, rect.bottom};
-  auto err = Hwc2toHwc3Error(layer.layer->SetLayerDisplayFrame(hwc2_rect));
-  if (err != hwc3::Error::kNone) {
-    cmd_result_writer_->AddError(err);
-  }
-}
-void ComposerClient::ExecuteSetLayerPlaneAlpha(int64_t /*display_id*/,
-                                               HwcLayerWrapper& layer,
-                                               const PlaneAlpha& plane_alpha) {
-  auto err = Hwc2toHwc3Error(
-      layer.layer->SetLayerPlaneAlpha(plane_alpha.alpha));
-  if (err != hwc3::Error::kNone) {
-    cmd_result_writer_->AddError(err);
-  }
-}
-
-void ComposerClient::ExecuteSetLayerSourceCrop(
-    int64_t /*display_id*/, HwcLayerWrapper& layer,
-    const common::FRect& source_crop) {
-  const hwc_frect_t rect{source_crop.left, source_crop.top, source_crop.right,
-                         source_crop.bottom};
-  auto err = Hwc2toHwc3Error(layer.layer->SetLayerSourceCrop(rect));
-  if (err != hwc3::Error::kNone) {
-    cmd_result_writer_->AddError(err);
-  }
-}
-void ComposerClient::ExecuteSetLayerTransform(
-    int64_t /*display_id*/, HwcLayerWrapper& layer,
-    const ParcelableTransform& transform) {
-  auto err = Hwc2toHwc3Error(
-      layer.layer->SetLayerTransform(Hwc3TransformToHwc2(transform.transform)));
-  if (err != hwc3::Error::kNone) {
-    cmd_result_writer_->AddError(err);
-  }
-}
-void ComposerClient::ExecuteSetLayerZOrder(int64_t /*display_id*/,
-                                           HwcLayerWrapper& layer,
-                                           const ZOrder& z_order) {
-  auto err = Hwc2toHwc3Error(layer.layer->SetLayerZOrder(z_order.z));
-  if (err != hwc3::Error::kNone) {
-    cmd_result_writer_->AddError(err);
-  }
-}
-
-void ComposerClient::ExecuteSetLayerBrightness(
-    int64_t /*display_id*/, HwcLayerWrapper& /*layer*/,
-    const LayerBrightness& brightness) {
-  if (std::signbit(brightness.brightness) ||
-      std::isnan(brightness.brightness)) {
-    cmd_result_writer_->AddError(hwc3::Error::kBadParameter);
-  }
-}
-
-void ComposerClient::ExecuteSetDisplayBrightness(
-    uint64_t display_id, const DisplayBrightness& command) {
-  auto* display = GetDisplay(display_id);
-  if (display == nullptr) {
-    cmd_result_writer_->AddError(hwc3::Error::kBadDisplay);
-    return;
-  }
-
-  auto error = Hwc2toHwc3Error(
-      display->SetDisplayBrightness(command.brightness));
-  if (error != hwc3::Error::kNone) {
-    cmd_result_writer_->AddError(error);
-  }
-}
 void ComposerClient::ExecuteSetDisplayColorTransform(
     uint64_t display_id, const std::vector<float>& matrix) {
   auto* display = GetDisplay(display_id);

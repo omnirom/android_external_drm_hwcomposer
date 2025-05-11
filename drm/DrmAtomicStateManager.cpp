@@ -101,7 +101,7 @@ auto DrmAtomicStateManager::CommitFrame(AtomicCommitArgs &args) -> int {
     }
   }
 
-  bool nonblock = true;
+  bool nonblock = !args.blocking;
 
   if (args.active) {
     nonblock = false;
@@ -136,6 +136,17 @@ auto DrmAtomicStateManager::CommitFrame(AtomicCommitArgs &args) -> int {
     }
 
     if (!crtc->GetCtmProperty().AtomicSet(*pset, *new_frame_state.ctm_blob))
+      return -EINVAL;
+  }
+
+  if (args.colorspace && connector->GetColorspaceProperty()) {
+    if (!connector->GetColorspaceProperty()
+             .AtomicSet(*pset, connector->GetColorspacePropertyValue(*args.colorspace)))
+      return -EINVAL;
+  }
+
+  if (args.content_type && connector->GetContentTypeProperty()) {
+    if (!connector->GetContentTypeProperty().AtomicSet(*pset, *args.content_type))
       return -EINVAL;
   }
 

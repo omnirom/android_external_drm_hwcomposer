@@ -23,6 +23,7 @@
 #include <sstream>
 
 #include "HwcDisplayConfigs.h"
+#include "compositor/DisplayInfo.h"
 #include "compositor/FlatteningController.h"
 #include "compositor/LayerData.h"
 #include "drm/DrmAtomicStateManager.h"
@@ -40,6 +41,13 @@ inline constexpr uint32_t kPrimaryDisplay = 0;
 // NOLINTNEXTLINE
 class HwcDisplay {
  public:
+  enum ConfigError {
+    kNone,
+    kBadConfig,
+    kSeamlessNotAllowed,
+    kSeamlessNotPossible
+  };
+
   HwcDisplay(hwc2_display_t handle, HWC2::DisplayType type, DrmHwc *hwc);
   HwcDisplay(const HwcDisplay &) = delete;
   ~HwcDisplay();
@@ -58,7 +66,27 @@ class HwcDisplay {
     return configs_;
   }
 
-  // HWC Hooks
+  // Get the config representing the mode that has been committed to KMS.
+  auto GetCurrentConfig() const -> const HwcDisplayConfig *;
+
+  // Get the config that was last requested through SetActiveConfig and similar
+  // functions. This may differ from the GetCurrentConfig if the config change
+  // is queued up to take effect in the future.
+  auto GetLastRequestedConfig() const -> const HwcDisplayConfig *;
+
+  // Set a config synchronously. If the requested config fails to be committed,
+  // this will return with an error. Otherwise, the config will have been
+  // committed to the kernel on successful return.
+  ConfigError SetConfig(hwc2_config_t config);
+
+  // Queue a configuration change to take effect in the future.
+  auto QueueConfig(hwc2_config_t config, int64_t desired_time, bool seamless,
+                   QueuedConfigTiming *out_timing) -> ConfigError;
+
+  // Get the HwcDisplayConfig, or nullptor if none.
+  auto GetConfig(hwc2_config_t config_id) const -> const HwcDisplayConfig *;
+
+  // HWC2 Hooks - these should not be used outside of the hwc2 device.
   HWC2::Error AcceptDisplayChanges();
   HWC2::Error CreateLayer(hwc2_layer_t *layer);
   HWC2::Error DestroyLayer(hwc2_layer_t layer);
@@ -197,16 +225,21 @@ class HwcDisplay {
     virtual_disp_height_ = height;
   }
 
+  auto getDisplayPhysicalOrientation() -> std::optional<PanelOrientation>;
+
  private:
+  AtomicCommitArgs CreateModesetCommit(
+      const HwcDisplayConfig *config,
+      const std::optional<LayerData> &modeset_layer);
+
   HwcDisplayConfigs configs_;
 
   DrmHwc *const hwc_;
 
   SharedFd present_fence_;
 
-  std::optional<DrmMode> staged_mode_;
   int64_t staged_mode_change_time_{};
-  uint32_t staged_mode_config_id_{};
+  std::optional<uint32_t> staged_mode_config_id_{};
 
   std::shared_ptr<DrmDisplayPipeline> pipeline_;
 
@@ -233,6 +266,8 @@ class HwcDisplay {
   static constexpr int kCtmCols = 3;
   std::shared_ptr<drm_color_ctm> color_matrix_;
   android_color_transform_t color_transform_hint_{};
+  int32_t content_type_{};
+  Colorspace colorspace_{};
 
   std::shared_ptr<DrmKmsPlan> current_plan_;
 
@@ -241,7 +276,7 @@ class HwcDisplay {
   Stats prev_stats_;
   std::string DumpDelta(HwcDisplay::Stats delta);
 
-  void SetColorMarixToIdentity();
+  void SetColorMatrixToIdentity();
 
   HWC2::Error Init();
 
