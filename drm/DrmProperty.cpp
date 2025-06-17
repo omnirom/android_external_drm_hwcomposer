@@ -35,12 +35,14 @@ DrmProperty::DrmPropertyEnum::DrmPropertyEnum(drm_mode_property_enum *e)
     : value(e->value), name(e->name) {
 }
 
-DrmProperty::DrmProperty(uint32_t obj_id, drmModePropertyPtr p,
-                         uint64_t value) {
-  Init(obj_id, p, value);
+DrmProperty::DrmProperty(const SharedFd &fd, uint32_t obj_id,
+                         drmModePropertyPtr p, uint64_t value) {
+  Init(fd, obj_id, p, value);
 }
 
-void DrmProperty::Init(uint32_t obj_id, drmModePropertyPtr p, uint64_t value) {
+void DrmProperty::Init(const SharedFd &fd, uint32_t obj_id,
+                       drmModePropertyPtr p, uint64_t value) {
+  fd_ = fd;
   obj_id_ = obj_id;
   id_ = p->prop_id;
   flags_ = p->flags;
@@ -142,6 +144,26 @@ std::optional<std::string> DrmProperty::GetEnumNameFromValue(
   ALOGE("Property '%s' has no matching enum for value: %" PRIu64, name_.c_str(),
         value);
   return {};
+}
+
+auto DrmProperty::GetEnumMask(uint64_t &mask) -> bool {
+  if (enums_.empty()) {
+    ALOGE("No enum values for property: %s", name_.c_str());
+    return false;
+  }
+
+  if (!IsBitmask()) {
+    ALOGE("Property %s is not a bitmask property.", name_.c_str());
+    return false;
+  }
+
+  mask = 0;
+
+  for (const auto &it : enums_) {
+    mask |= (1 << it.value);
+  }
+
+  return true;
 }
 
 }  // namespace android

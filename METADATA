@@ -1,3 +1,19 @@
+# This project was upgraded with external_updater.
+# Usage: tools/external_updater/updater.sh update external/drm_hwcomposer
+# For more info, check https://cs.android.com/android/platform/superproject/main/+/main:tools/external_updater/README.md
+
+name: "drm_hwcomposer"
+description: "KMS-based HWComposer implementation."
 third_party {
   license_type: NOTICE
+  last_upgrade_date {
+    year: 2025
+    month: 3
+    day: 21
+  }
+  identifier {
+    type: "Git"
+    value: "https://gitlab.freedesktop.org/drm-hwcomposer/drm-hwcomposer"
+    version: "12d302c4abcef99ab28c94c3fef709754fac48e2"
+  }
 }

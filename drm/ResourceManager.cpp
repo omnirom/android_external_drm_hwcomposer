@@ -55,7 +55,7 @@ void ResourceManager::Init() {
   auto path_len = property_get("vendor.hwc.drm.device", path_pattern,
                                "/dev/dri/card%");
   if (path_pattern[path_len - 1] != '%') {
-    auto dev = DrmDevice::CreateInstance(path_pattern, this);
+    auto dev = DrmDevice::CreateInstance(path_pattern, this, 0);
     if (dev) {
       drms_.emplace_back(std::move(dev));
     }
@@ -69,17 +69,16 @@ void ResourceManager::Init() {
       if (stat(path.str().c_str(), &buf) != 0)
         break;
 
-      auto dev = DrmDevice::CreateInstance(path.str(), this);
+      auto dev = DrmDevice::CreateInstance(path.str(), this, idx);
       if (dev) {
         drms_.emplace_back(std::move(dev));
       }
     }
   }
 
-  char proptext[PROPERTY_VALUE_MAX];
-  property_get("vendor.hwc.drm.scale_with_gpu", proptext, "0");
-  scale_with_gpu_ = bool(strncmp(proptext, "0", 1));
+  scale_with_gpu_ = Properties::ScaleWithGpu();
 
+  char proptext[PROPERTY_VALUE_MAX];
   constexpr char kDrmOrGpu[] = "DRM_OR_GPU";
   constexpr char kDrmOrIgnore[] = "DRM_OR_IGNORE";
   property_get("vendor.hwc.drm.ctm", proptext, kDrmOrGpu);
@@ -125,7 +124,7 @@ auto ResourceManager::GetTimeMonotonicNs() -> int64_t {
   struct timespec ts {};
   clock_gettime(CLOCK_MONOTONIC, &ts);
   constexpr int64_t kNsInSec = 1000000000LL;
-  return int64_t(ts.tv_sec) * kNsInSec + int64_t(ts.tv_nsec);
+  return (int64_t(ts.tv_sec) * kNsInSec) + int64_t(ts.tv_nsec);
 }
 
 void ResourceManager::UpdateFrontendDisplays() {

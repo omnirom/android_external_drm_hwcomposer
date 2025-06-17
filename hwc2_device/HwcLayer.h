@@ -18,30 +18,43 @@
 
 #include <aidl/android/hardware/graphics/common/Transform.h>
 #include <hardware/hwcomposer2.h>
+#include <memory>
 
+#include "bufferinfo/BufferInfo.h"
 #include "bufferinfo/BufferInfoGetter.h"
 #include "compositor/LayerData.h"
+#include "utils/fd.h"
 
 namespace android {
 
 class HwcDisplay;
 
+class FrontendLayerBase {
+ public:
+  virtual ~FrontendLayerBase() = default;
+};
+
 class HwcLayer {
  public:
   struct Buffer {
-    buffer_handle_t buffer_handle;
-    SharedFd acquire_fence;
+    int32_t slot_id;
+    std::optional<BufferInfo> bi;
+  };
+  struct Slot {
+    int32_t slot_id;
+    SharedFd fence;
   };
   // A set of properties to be validated.
   struct LayerProperties {
-    std::optional<Buffer> buffer;
+    std::optional<Buffer> slot_buffer;
+    std::optional<Slot> active_slot;
     std::optional<BufferBlendMode> blend_mode;
     std::optional<BufferColorSpace> color_space;
     std::optional<BufferSampleRange> sample_range;
     std::optional<HWC2::Composition> composition_type;
-    std::optional<hwc_rect_t> display_frame;
+    std::optional<DstRectInfo> display_frame;
     std::optional<float> alpha;
-    std::optional<hwc_frect_t> source_crop;
+    std::optional<SrcRectInfo> source_crop;
     std::optional<LayerTransform> transform;
     std::optional<uint32_t> z_order;
   };
@@ -82,21 +95,13 @@ class HwcLayer {
 
   void SetLayerProperties(const LayerProperties &layer_properties);
 
-  // HWC2 Layer hooks
-  HWC2::Error SetCursorPosition(int32_t /*x*/, int32_t /*y*/);
-  HWC2::Error SetLayerBlendMode(int32_t mode);
-  HWC2::Error SetLayerBuffer(buffer_handle_t buffer, int32_t acquire_fence);
-  HWC2::Error SetLayerColor(hwc_color_t /*color*/);
-  HWC2::Error SetLayerCompositionType(int32_t type);
-  HWC2::Error SetLayerDataspace(int32_t dataspace);
-  HWC2::Error SetLayerDisplayFrame(hwc_rect_t frame);
-  HWC2::Error SetLayerPlaneAlpha(float alpha);
-  HWC2::Error SetLayerSidebandStream(const native_handle_t *stream);
-  HWC2::Error SetLayerSourceCrop(hwc_frect_t crop);
-  HWC2::Error SetLayerSurfaceDamage(hwc_region_t damage);
-  HWC2::Error SetLayerTransform(int32_t transform);
-  HWC2::Error SetLayerVisibleRegion(hwc_region_t visible);
-  HWC2::Error SetLayerZOrder(uint32_t order);
+  auto GetFrontendPrivateData() -> std::shared_ptr<FrontendLayerBase> {
+    return frontend_private_data_;
+  }
+
+  auto SetFrontendPrivateData(std::shared_ptr<FrontendLayerBase> data) {
+    frontend_private_data_ = std::move(data);
+  }
 
  private:
   // sf_type_ stores the initial type given to us by surfaceflinger,
@@ -117,43 +122,32 @@ class HwcLayer {
   BufferColorSpace color_space_{};
   BufferSampleRange sample_range_{};
   BufferBlendMode blend_mode_{};
-  buffer_handle_t buffer_handle_{};
-  bool buffer_handle_updated_{};
+  bool buffer_updated_{};
 
   bool prior_buffer_scanout_flag_{};
 
   HwcDisplay *const parent_;
 
-  /* Layer state */
- public:
-  void PopulateLayerData();
+  std::shared_ptr<FrontendLayerBase> frontend_private_data_;
 
-  bool IsLayerUsableAsDevice() const {
-    return !bi_get_failed_ && !fb_import_failed_ && buffer_handle_ != nullptr;
-  }
-
- private:
-  void ImportFb();
-  bool bi_get_failed_{};
-  bool fb_import_failed_{};
-
-  /* SwapChain Cache */
- public:
-  void SwChainClearCache();
-
- private:
-  struct SwapChainElement {
-    std::optional<BufferInfo> bi;
+  std::optional<int32_t> active_slot_id_;
+  struct BufferSlot {
+    BufferInfo bi;
     std::shared_ptr<DrmFbIdHandle> fb;
   };
+  std::map<int32_t /*slot*/, BufferSlot> slots_;
 
-  bool SwChainGetBufferFromCache(BufferUniqueId unique_id);
-  void SwChainReassemble(BufferUniqueId unique_id);
-  void SwChainAddCurrentBuffer(BufferUniqueId unique_id);
+  void ImportFb();
+  bool fb_import_failed_{};
 
-  std::map<int /*seq_no*/, SwapChainElement> swchain_cache_;
-  std::map<BufferUniqueId, int /*seq_no*/> swchain_lookup_table_;
-  bool swchain_reassembled_{};
+ public:
+  void PopulateLayerData();
+  void ClearSlots();
+
+  bool IsLayerUsableAsDevice() const {
+    return !fb_import_failed_ && active_slot_id_.has_value() &&
+           slots_.count(*active_slot_id_) > 0;
+  }
 };
 
 }  // namespace android

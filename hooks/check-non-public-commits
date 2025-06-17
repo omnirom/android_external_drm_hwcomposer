@@ -8,7 +8,8 @@ url="$2"
 
 # Don't bother checking if this is being pushed to gerrit.
 if [[ "$url" = "sso://googleplex-android/platform/external/drm_hwcomposer" ]] ||
-   [[ "$url" = "sso://android.googlesource.com/platform/external/drm_hwcomposer" ]]
+   [[ "$url" = "sso://android.googlesource.com/platform/external/drm_hwcomposer" ]] ||
+   [[ "$url" = "sso://android/platform/external/drm_hwcomposer" ]]
 then
   exit 0
 fi

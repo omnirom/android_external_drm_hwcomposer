@@ -9,15 +9,13 @@ OUT_DIR := /tmp/drm_hwcomposer/build
 SRC_DIR := .
 
 CXXFLAGS := -Wall -Wextra -Werror -Wno-missing-designated-field-initializers
-CXXFLAGS += -D_LIBCPP_ENABLE_THREAD_SAFETY_ANNOTATIONS
+CXXFLAGS += -D_LIBCPP_ENABLE_THREAD_SAFETY_ANNOTATIONS -Wthread-safety
 CXXFLAGS += -fvisibility-inlines-hidden -std=gnu++17 -DHWC2_USE_CPP11 -DHWC2_INCLUDE_STRINGIFICATION -fno-rtti
 
 CXXARGS := $(shell cat $(BASE_DIR)/toolchain_wrapper/sharedlib.cppflags)
 CXXARGS := $(subst [BASE_DIR],$(BASE_DIR),$(CXXARGS))
 # clang-tidy doesn't like -mcpu=xxx flag
 CXXARGS := $(patsubst -mcpu=%,,$(CXXARGS))
-# TODO: build aospless with gtest enabled and remove line below
-CXXARGS := $(subst -nostdlibinc,,$(CXXARGS))
 CXXARGS += -I. -I./tests/test_include $(CXXFLAGS)
 
 TIDY_FILES_OVERRIDE := \
@@ -55,14 +53,6 @@ TIDY_CHECKS_FINE := *                                   \
     -readability-redundant-member-init                  \
     -cppcoreguidelines-avoid-const-or-ref-data-members  \
     -cert-err33-c                                       \
-    -readability-math-missing-parentheses               \
-    -readability-avoid-unconditional-preprocessor-if    \
-    -modernize-type-traits                              \
-    -clang-analyzer-optin.core.EnumCastOutOfRange       \
-    -performance-inefficient-vector-operation           \
-    -readability-static-accessed-through-instance       \
-    -misc-use-internal-linkage                          \
-    -performance-avoid-endl                             \
 
 TIDY_CHECKS_NORMAL :=                                   \
     $(TIDY_CHECKS_FINE)                                 \

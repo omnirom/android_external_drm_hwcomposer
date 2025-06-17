@@ -22,6 +22,8 @@
 #include <optional>
 #include <sstream>
 
+#include <ui/GraphicTypes.h>
+
 #include "HwcDisplayConfigs.h"
 #include "compositor/DisplayInfo.h"
 #include "compositor/FlatteningController.h"
@@ -36,6 +38,11 @@ namespace android {
 class Backend;
 class DrmHwc;
 
+class FrontendDisplayBase {
+ public:
+  virtual ~FrontendDisplayBase() = default;
+};
+
 inline constexpr uint32_t kPrimaryDisplay = 0;
 
 // NOLINTNEXTLINE
@@ -45,12 +52,16 @@ class HwcDisplay {
     kNone,
     kBadConfig,
     kSeamlessNotAllowed,
-    kSeamlessNotPossible
+    kSeamlessNotPossible,
+    kConfigFailed,
   };
 
   HwcDisplay(hwc2_display_t handle, HWC2::DisplayType type, DrmHwc *hwc);
   HwcDisplay(const HwcDisplay &) = delete;
   ~HwcDisplay();
+
+  void SetColorTransformMatrix(
+      const std::array<float, 16> &color_transform_matrix);
 
   /* SetPipeline should be carefully used only by DrmHwcTwo hotplug handlers */
   void SetPipeline(std::shared_ptr<DrmDisplayPipeline> pipeline);
@@ -86,24 +97,47 @@ class HwcDisplay {
   // Get the HwcDisplayConfig, or nullptor if none.
   auto GetConfig(hwc2_config_t config_id) const -> const HwcDisplayConfig *;
 
+  auto GetDisplayBoundsMm() -> std::pair<int32_t, int32_t>;
+
+  // To be called after SetDisplayProperties. Returns an empty vector if the
+  // requested layers have been validated, otherwise the vector describes
+  // the requested composition type changes.
+  using ChangedLayer = std::pair<ILayerId, HWC2::Composition>;
+  auto ValidateStagedComposition() -> std::vector<ChangedLayer>;
+
+  // Mark previously validated properties as ready to present.
+  auto AcceptValidatedComposition() -> void;
+
+  using ReleaseFence = std::pair<ILayerId, SharedFd>;
+  // Present previously staged properties, and return fences to indicate when
+  // the new content has been presented, and when the previous buffers have
+  // been released. If |desired_present_time| is set, ensure that the
+  // composition is presented at the closest vsync to that requested time.
+  // Otherwise, present immediately.
+  auto PresentStagedComposition(std::optional<int64_t> desired_present_time,
+                                SharedFd &out_present_fence,
+                                std::vector<ReleaseFence> &out_release_fences)
+      -> bool;
+
+  auto GetFrontendPrivateData() -> std::shared_ptr<FrontendDisplayBase> {
+    return frontend_private_data_;
+  }
+
+  auto SetFrontendPrivateData(std::shared_ptr<FrontendDisplayBase> data) {
+    frontend_private_data_ = std::move(data);
+  }
+
+  auto CreateLayer(ILayerId new_layer_id) -> bool;
+  auto DestroyLayer(ILayerId layer_id) -> bool;
+
   // HWC2 Hooks - these should not be used outside of the hwc2 device.
-  HWC2::Error AcceptDisplayChanges();
-  HWC2::Error CreateLayer(hwc2_layer_t *layer);
-  HWC2::Error DestroyLayer(hwc2_layer_t layer);
   HWC2::Error GetActiveConfig(hwc2_config_t *config) const;
-  HWC2::Error GetChangedCompositionTypes(uint32_t *num_elements,
-                                         hwc2_layer_t *layers, int32_t *types);
-  HWC2::Error GetClientTargetSupport(uint32_t width, uint32_t height,
-                                     int32_t format, int32_t dataspace);
   HWC2::Error GetColorModes(uint32_t *num_modes, int32_t *modes);
   HWC2::Error GetDisplayAttribute(hwc2_config_t config, int32_t attribute,
                                   int32_t *value);
   HWC2::Error LegacyGetDisplayConfigs(uint32_t *num_configs,
                                       hwc2_config_t *configs);
   HWC2::Error GetDisplayName(uint32_t *size, char *name);
-  HWC2::Error GetDisplayRequests(int32_t *display_requests,
-                                 uint32_t *num_elements, hwc2_layer_t *layers,
-                                 int32_t *layer_requests);
   HWC2::Error GetDisplayType(int32_t *type);
 #if __ANDROID_API__ > 27
   HWC2::Error GetRenderIntents(int32_t mode, uint32_t *outNumIntents,
@@ -116,8 +150,6 @@ class HwcDisplay {
                                            uint8_t *outData);
   HWC2::Error GetDisplayCapabilities(uint32_t *outNumCapabilities,
                                      uint32_t *outCapabilities);
-  HWC2::Error GetDisplayBrightnessSupport(bool *supported);
-  HWC2::Error SetDisplayBrightness(float);
 #endif
 #if __ANDROID_API__ > 29
   HWC2::Error GetDisplayConnectionType(uint32_t *outType);
@@ -126,34 +158,22 @@ class HwcDisplay {
       hwc2_config_t config,
       hwc_vsync_period_change_constraints_t *vsyncPeriodChangeConstraints,
       hwc_vsync_period_change_timeline_t *outTimeline);
-  HWC2::Error SetAutoLowLatencyMode(bool on);
-  HWC2::Error GetSupportedContentTypes(
-      uint32_t *outNumSupportedContentTypes,
-      const uint32_t *outSupportedContentTypes);
 
   HWC2::Error SetContentType(int32_t contentType);
 #endif
   HWC2::Error GetDisplayVsyncPeriod(uint32_t *outVsyncPeriod);
 
-  HWC2::Error GetDozeSupport(int32_t *support);
   HWC2::Error GetHdrCapabilities(uint32_t *num_types, int32_t *types,
                                  float *max_luminance,
                                  float *max_average_luminance,
                                  float *min_luminance);
-  HWC2::Error GetReleaseFences(uint32_t *num_elements, hwc2_layer_t *layers,
-                               int32_t *fences);
-  HWC2::Error PresentDisplay(int32_t *out_present_fence);
   HWC2::Error SetActiveConfig(hwc2_config_t config);
   HWC2::Error ChosePreferredConfig();
-  HWC2::Error SetClientTarget(buffer_handle_t target, int32_t acquire_fence,
-                              int32_t dataspace, hwc_region_t damage);
   HWC2::Error SetColorMode(int32_t mode);
   HWC2::Error SetColorTransform(const float *matrix, int32_t hint);
-  HWC2::Error SetOutputBuffer(buffer_handle_t buffer, int32_t release_fence);
   HWC2::Error SetPowerMode(int32_t mode);
   HWC2::Error SetVsyncEnabled(int32_t enabled);
-  HWC2::Error ValidateDisplay(uint32_t *num_types, uint32_t *num_requests);
-  HwcLayer *get_layer(hwc2_layer_t layer) {
+  HwcLayer *get_layer(ILayerId layer) {
     auto it = layers_.find(layer);
     if (it == layers_.end())
       return nullptr;
@@ -186,7 +206,7 @@ class HwcDisplay {
     return hwc_;
   }
 
-  std::map<hwc2_layer_t, HwcLayer> &layers() {
+  auto layers() -> std::map<ILayerId, HwcLayer> & {
     return layers_;
   }
 
@@ -216,6 +236,10 @@ class HwcDisplay {
     return flatcon_;
   }
 
+  auto GetClientLayer() -> HwcLayer & {
+    return client_layer_;
+  }
+
   auto &GetWritebackLayer() {
     return writeback_layer_;
   }
@@ -227,16 +251,20 @@ class HwcDisplay {
 
   auto getDisplayPhysicalOrientation() -> std::optional<PanelOrientation>;
 
+  bool NeedsClientLayerUpdate() const;
+
  private:
   AtomicCommitArgs CreateModesetCommit(
       const HwcDisplayConfig *config,
       const std::optional<LayerData> &modeset_layer);
 
+  // Sleep the current thread until |present_time| is closest to the next
+  // expected vsync time.
+  void WaitForPresentTime(int64_t present_time, uint32_t vsync_period_ns);
+
   HwcDisplayConfigs configs_;
 
   DrmHwc *const hwc_;
-
-  SharedFd present_fence_;
 
   int64_t staged_mode_change_time_{};
   std::optional<uint32_t> staged_mode_config_id_{};
@@ -246,28 +274,26 @@ class HwcDisplay {
   std::unique_ptr<Backend> backend_;
   std::shared_ptr<FlatteningController> flatcon_;
 
-  std::shared_ptr<VSyncWorker> vsync_worker_;
+  std::unique_ptr<VSyncWorker> vsync_worker_;
   bool vsync_event_en_{};
-  bool vsync_tracking_en_{};
-  int64_t last_vsync_ts_{};
 
   const hwc2_display_t handle_;
   HWC2::DisplayType type_;
 
-  uint32_t layer_idx_{};
-
-  std::map<hwc2_layer_t, HwcLayer> layers_;
+  std::map<ILayerId, HwcLayer> layers_;
   HwcLayer client_layer_;
   std::unique_ptr<HwcLayer> writeback_layer_;
   uint16_t virtual_disp_width_{};
   uint16_t virtual_disp_height_{};
   int32_t color_mode_{};
-  static constexpr int kCtmRows = 3;
-  static constexpr int kCtmCols = 3;
   std::shared_ptr<drm_color_ctm> color_matrix_;
+  std::shared_ptr<drm_color_ctm> identity_color_matrix_;
   android_color_transform_t color_transform_hint_{};
+  bool ctm_has_offset_ = false;
   int32_t content_type_{};
   Colorspace colorspace_{};
+  int32_t min_bpc_{};
+  std::shared_ptr<hdr_output_metadata> hdr_metadata_;
 
   std::shared_ptr<DrmKmsPlan> current_plan_;
 
@@ -281,6 +307,14 @@ class HwcDisplay {
   HWC2::Error Init();
 
   HWC2::Error SetActiveConfigInternal(uint32_t config, int64_t change_time);
+  HWC2::Error SetHdrOutputMetadata(ui::Hdr hdrType);
+  HWC2::Error SetOutputType(uint32_t hdr_output_type);
+
+  auto GetEdid() -> EdidWrapperUnique & {
+    return GetPipe().connector->Get()->GetParsedEdid();
+  }
+
+  std::shared_ptr<FrontendDisplayBase> frontend_private_data_;
 };
 
 }  // namespace android

@@ -16,6 +16,7 @@ src_common = files(
     'backend/Backend.cpp',
     'backend/BackendClient.cpp',
     'utils/fd.cpp',
+    'utils/LibdisplayEdidWrapper.cpp',
     'utils/properties.cpp',
 )
 
@@ -44,6 +45,12 @@ deps = [
 common_cpp_flags = [
     '-DUSE_IMAPPER4_METADATA_API',
 ]
+
+dep_libdisplay_info = dependency('display_info', required : false)
+if dep_libdisplay_info.found()
+  common_cpp_flags += '-DHAS_LIBDISPLAY_INFO'
+  deps += dep_libdisplay_info
+endif
 
 hwc2_cpp_flags = [
     '-DHWC2_INCLUDE_STRINGIFICATION',

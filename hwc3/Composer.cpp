@@ -38,10 +38,12 @@ ndk::ScopedAStatus Composer::createClient(
   }
 
   auto client = ndk::SharedRefBase::make<ComposerClient>();
-  if (!client || !client->Init()) {
+  if (!client) {
     *out_client = nullptr;
     return ToBinderStatus(hwc3::Error::kNoResources);
   }
+
+  client->Init();
 
   *out_client = client;
   client_ = client;
@@ -76,6 +78,10 @@ ndk::ScopedAStatus Composer::getCapabilities(std::vector<Capability>* caps) {
   if (Properties::IsPresentFenceNotReliable()) {
     caps->emplace_back(Capability::PRESENT_FENCE_IS_NOT_RELIABLE);
   }
+
+#if __ANDROID_API__ >= 35
+  caps->emplace_back(Capability::LAYER_LIFECYCLE_BATCH_COMMAND);
+#endif
 
   return ndk::ScopedAStatus::ok();
 }

@@ -28,7 +28,15 @@
 
 namespace aidl::android::hardware::graphics::composer3::impl {
 
-using ::android::HwcDisplay;
+auto DrmHwcThree::GetHwc3Display(::android::HwcDisplay& display)
+    -> std::shared_ptr<Hwc3Display> {
+  auto frontend_private_data = display.GetFrontendPrivateData();
+  if (!frontend_private_data) {
+    frontend_private_data = std::make_shared<Hwc3Display>();
+    display.SetFrontendPrivateData(frontend_private_data);
+  }
+  return std::static_pointer_cast<Hwc3Display>(frontend_private_data);
+}
 
 DrmHwcThree::~DrmHwcThree() {
   /* Display deinit routine is handled by resource manager */
@@ -53,7 +61,16 @@ void DrmHwcThree::SendVsyncPeriodTimingChangedEventToClient(
 }
 
 void DrmHwcThree::SendRefreshEventToClient(uint64_t display_id) {
-  composer_resources_->SetDisplayMustValidateState(display_id, true);
+  {
+    const std::unique_lock lock(GetResMan().GetMainLock());
+    auto* idisplay = GetDisplay(display_id);
+    if (idisplay == nullptr) {
+      ALOGE("Failed to get display %" PRIu64, display_id);
+      return;
+    }
+    auto hwc3_display = GetHwc3Display(*idisplay);
+    hwc3_display->must_validate = true;
+  }
   composer_callback_->onRefresh(static_cast<int64_t>(display_id));
 }
 
@@ -71,11 +88,9 @@ void DrmHwcThree::SendHotplugEventToClient(
   switch (display_status) {
     case DrmHwc::kDisconnected:
       event = common::DisplayHotplugEvent::DISCONNECTED;
-      HandleDisplayHotplugEvent(static_cast<uint64_t>(display_id), false);
       break;
     case DrmHwc::kConnected:
       event = common::DisplayHotplugEvent::CONNECTED;
-      HandleDisplayHotplugEvent(static_cast<uint64_t>(display_id), true);
       break;
     case DrmHwc::kLinkTrainingFailed:
       event = common::DisplayHotplugEvent::ERROR_INCOMPATIBLE_CABLE;
@@ -89,73 +104,9 @@ void DrmHwcThree::SendHotplugEventToClient(
 void DrmHwcThree::SendHotplugEventToClient(
     hwc2_display_t display_id, DrmHwc::DisplayStatus display_status) {
   bool connected = display_status != DrmHwc::kDisconnected;
-  HandleDisplayHotplugEvent(static_cast<uint64_t>(display_id), connected);
   composer_callback_->onHotplug(static_cast<int64_t>(display_id), connected);
 }
 
 #endif
-
-void DrmHwcThree::CleanDisplayResources(uint64_t display_id) {
-  DEBUG_FUNC();
-  HwcDisplay* display = GetDisplay(display_id);
-  if (display == nullptr) {
-    return;
-  }
-
-  display->SetPowerMode(static_cast<int32_t>(PowerMode::OFF));
-
-  size_t cache_size = 0;
-  auto err = composer_resources_->GetDisplayClientTargetCacheSize(display_id,
-                                                                  &cache_size);
-  if (err != hwc3::Error::kNone) {
-    ALOGE("%s: Could not clear target buffer cache for display: %" PRIu64,
-          __func__, display_id);
-    return;
-  }
-
-  for (size_t slot = 0; slot < cache_size; slot++) {
-    buffer_handle_t buffer_handle = nullptr;
-    auto buf_releaser = ComposerResources::CreateResourceReleaser(true);
-
-    Buffer buf{};
-    buf.slot = static_cast<int32_t>(slot);
-    err = composer_resources_->GetDisplayClientTarget(display_id, buf,
-                                                      &buffer_handle,
-                                                      buf_releaser.get());
-    if (err != hwc3::Error::kNone) {
-      continue;
-    }
-
-    err = Hwc2toHwc3Error(
-        display->SetClientTarget(buffer_handle, -1,
-                                 static_cast<int32_t>(
-                                     common::Dataspace::UNKNOWN),
-                                 {}));
-    if (err != hwc3::Error::kNone) {
-      ALOGE(
-          "%s: Could not clear slot %zu of the target buffer cache for "
-          "display %" PRIu64,
-          __func__, slot, display_id);
-    }
-  }
-}
-
-void DrmHwcThree::HandleDisplayHotplugEvent(uint64_t display_id,
-                                            bool connected) {
-  DEBUG_FUNC();
-  if (!connected) {
-    composer_resources_->RemoveDisplay(display_id);
-    Displays().erase(display_id);
-    return;
-  }
-
-  if (composer_resources_->HasDisplay(display_id)) {
-    /* Cleanup existing display resources */
-    CleanDisplayResources(display_id);
-    composer_resources_->RemoveDisplay(display_id);
-    Displays().erase(display_id);
-  }
-  composer_resources_->AddPhysicalDisplay(display_id);
-}
 
 }  // namespace aidl::android::hardware::graphics::composer3::impl

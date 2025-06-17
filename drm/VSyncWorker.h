@@ -23,41 +23,64 @@
 #include <thread>
 
 #include "DrmDevice.h"
+#include "utils/thread_annotations.h"
 
 namespace android {
 
-struct VSyncWorkerCallbacks {
-  std::function<void(uint64_t /*timestamp*/)> out_event;
-  std::function<uint32_t()> get_vperiod_ns;
-};
-
 class VSyncWorker {
  public:
-  ~VSyncWorker() = default;
+  using VsyncTimestampCallback = std::function<void(int64_t /*timestamp*/,
+                                                    uint32_t /*period*/)>;
 
-  auto static CreateInstance(std::shared_ptr<DrmDisplayPipeline> &pipe,
-                             VSyncWorkerCallbacks &callbacks)
-      -> std::shared_ptr<VSyncWorker>;
+  ~VSyncWorker();
 
-  void VSyncControl(bool enabled);
+  auto static CreateInstance(std::shared_ptr<DrmDisplayPipeline> &pipe)
+      -> std::unique_ptr<VSyncWorker>;
+
+  // Set the expected vsync period. Resets internal timestamp tracking until the
+  // next vsync event is tracked.
+  void SetVsyncPeriodNs(uint32_t vsync_period_ns);
+
+  // Set or clear a callback to be fired on vsync.
+  void SetTimestampCallback(std::optional<VsyncTimestampCallback> &&callback);
+
+  // Enable vsync timestamp tracking. GetLastVsyncTimestamp will return 0 if
+  // vsync tracking is disabled, or if no vsync has happened since it was
+  // enabled.
+  void SetVsyncTimestampTracking(bool enabled);
+  uint32_t GetLastVsyncTimestamp();
+
+  // Get the next predicted vsync timestamp after |time|, based on the last
+  // recorded vsync timestamp and the current vsync period.
+  int64_t GetNextVsyncTimestamp(int64_t time);
+
   void StopThread();
 
  private:
   VSyncWorker() = default;
 
-  void ThreadFn(const std::shared_ptr<VSyncWorker> &vsw);
+  void ThreadFn();
 
-  int64_t GetPhasedVSync(int64_t frame_ns, int64_t current) const;
+  int64_t GetPhasedVSync(int64_t frame_ns, int64_t current) const
+      REQUIRES(mutex_);
   int SyntheticWaitVBlank(int64_t *timestamp);
 
-  VSyncWorkerCallbacks callbacks_;
+  void UpdateVSyncControl();
+  bool ShouldEnable() const REQUIRES(mutex_);
 
   SharedFd drm_fd_;
   uint32_t high_crtc_ = 0;
 
-  bool enabled_ = false;
-  bool thread_exit_ = false;
-  int64_t last_timestamp_ = -1;
+  bool enabled_ GUARDED_BY(mutex_) = false;
+  bool thread_exit_ GUARDED_BY(mutex_) = false;
+  std::optional<int64_t> last_timestamp_ GUARDED_BY(mutex_);
+
+  // Default to 60Hz refresh rate
+  static constexpr uint32_t kDefaultVSPeriodNs = 16666666;
+  uint32_t vsync_period_ns_ GUARDED_BY(mutex_) = kDefaultVSPeriodNs;
+  bool enable_vsync_timestamps_ GUARDED_BY(mutex_) = false;
+  bool last_timestamp_is_fresh_ GUARDED_BY(mutex_) = false;
+  std::optional<VsyncTimestampCallback> callback_ GUARDED_BY(mutex_);
 
   std::condition_variable cv_;
   std::thread vswt_;

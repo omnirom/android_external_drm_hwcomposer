@@ -30,6 +30,12 @@ namespace android {
 class DrmDevice;
 struct LayerData;
 
+// NOLINTNEXTLINE(readability-identifier-naming)
+struct drm_plane_size_hint_local {
+  __u16 width;
+  __u16 height;
+};
+
 class DrmPlane : public PipelineBindable<DrmPlane> {
  public:
   DrmPlane(const DrmPlane &) = delete;
@@ -49,7 +55,7 @@ class DrmPlane : public PipelineBindable<DrmPlane> {
   bool HasNonRgbFormat() const;
 
   auto AtomicSetState(drmModeAtomicReq &pset, LayerData &layer, uint32_t zpos,
-                      uint32_t crtc_id) -> int;
+                      uint32_t crtc_id, DstRectInfo &whole_display_rect) -> int;
   auto AtomicDisablePlane(drmModeAtomicReq &pset) -> int;
   auto &GetZPosProperty() const {
     return zpos_property_;
@@ -58,6 +64,8 @@ class DrmPlane : public PipelineBindable<DrmPlane> {
   auto GetId() const {
     return plane_->plane_id;
   }
+
+  bool HasCursorSizeConstraints() const;
 
  private:
   DrmPlane(DrmDevice &dev, DrmModePlaneUnique plane)
@@ -70,6 +78,7 @@ class DrmPlane : public PipelineBindable<DrmPlane> {
   auto Init() -> int;
   auto GetPlaneProperty(const char *prop_name, DrmProperty &property,
                         Presence presence = Presence::kMandatory) -> bool;
+  bool IsBufferValidForCursorPlane(const BufferInfo &bi) const;
 
   uint32_t type_{};
 
@@ -90,12 +99,14 @@ class DrmPlane : public PipelineBindable<DrmPlane> {
   DrmProperty alpha_property_;
   DrmProperty blend_property_;
   DrmProperty in_fence_fd_property_;
-  DrmProperty color_encoding_propery_;
+  DrmProperty color_encoding_property_;
   DrmProperty color_range_property_;
+  DrmProperty size_hints_property_;
 
   std::map<BufferBlendMode, uint64_t> blending_enum_map_;
   std::map<BufferColorSpace, uint64_t> color_encoding_enum_map_;
   std::map<BufferSampleRange, uint64_t> color_range_enum_map_;
-  std::map<LayerTransform, uint64_t> transform_enum_map_;
+  uint64_t transform_enum_mask_ = DRM_MODE_ROTATE_0;
+  std::vector<drm_plane_size_hint_local> size_hints_;
 };
 }  // namespace android

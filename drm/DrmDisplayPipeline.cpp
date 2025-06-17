@@ -65,18 +65,21 @@ static auto TryCreatePipeline(DrmDevice &dev, DrmConnector &connector,
   }
 
   std::vector<DrmPlane *> primary_planes;
-  std::vector<DrmPlane *> overlay_planes;
 
   /* Attach necessary resources */
   auto display_planes = std::vector<DrmPlane *>();
   for (const auto &plane : dev.GetPlanes()) {
     if (plane->IsCrtcSupported(crtc)) {
-      if (plane->GetType() == DRM_PLANE_TYPE_PRIMARY) {
-        primary_planes.emplace_back(plane.get());
-      } else if (plane->GetType() == DRM_PLANE_TYPE_OVERLAY) {
-        overlay_planes.emplace_back(plane.get());
-      } else {
-        ALOGI("Ignoring cursor plane %d", plane->GetId());
+      switch (plane->GetType()) {
+        case DRM_PLANE_TYPE_PRIMARY:
+          primary_planes.emplace_back(plane.get());
+          break;
+        case DRM_PLANE_TYPE_OVERLAY:
+        case DRM_PLANE_TYPE_CURSOR:
+          break;
+        default:
+          ALOGE("Unknown type for plane %d", plane->GetId());
+          break;
       }
     }
   }
@@ -158,35 +161,34 @@ auto DrmDisplayPipeline::CreatePipeline(DrmConnector &connector)
   return {};
 }
 
-static bool ReadUseOverlayProperty() {
-  char use_overlay_planes_prop[PROPERTY_VALUE_MAX];
-  property_get("vendor.hwc.drm.use_overlay_planes", use_overlay_planes_prop,
-               "1");
-  constexpr int kStrtolBase = 10;
-  return strtol(use_overlay_planes_prop, nullptr, kStrtolBase) != 0;
-}
+auto DrmDisplayPipeline::GetUsablePlanes() -> UsablePlanes {
+  UsablePlanes pair;
+  auto &[planes, cursor] = pair;
 
-auto DrmDisplayPipeline::GetUsablePlanes()
-    -> std::vector<std::shared_ptr<BindingOwner<DrmPlane>>> {
-  std::vector<std::shared_ptr<BindingOwner<DrmPlane>>> planes;
   planes.emplace_back(primary_plane);
 
-  const static bool kUseOverlayPlanes = ReadUseOverlayProperty();
-
-  if (kUseOverlayPlanes) {
-    for (const auto &plane : device->GetPlanes()) {
-      if (plane->IsCrtcSupported(*crtc->Get())) {
-        if (plane->GetType() == DRM_PLANE_TYPE_OVERLAY) {
-          auto op = plane->BindPipeline(this, true);
-          if (op) {
-            planes.emplace_back(op);
-          }
+  for (const auto &plane : device->GetPlanes()) {
+    if (plane->IsCrtcSupported(*crtc->Get())) {
+      if (Properties::UseOverlayPlanes() &&
+          plane->GetType() == DRM_PLANE_TYPE_OVERLAY) {
+        auto op = plane->BindPipeline(this, true);
+        if (op) {
+          planes.emplace_back(op);
+        }
+      } else if (plane->GetType() == DRM_PLANE_TYPE_CURSOR) {
+        if (cursor) {
+          ALOGW(
+              "Encountered multiple cursor planes for CRTC %d. Ignoring "
+              "plane %d",
+              crtc->Get()->GetId(), plane->GetId());
+        } else {
+          cursor = plane->BindPipeline(this, true);
         }
       }
     }
   }
 
-  return planes;
+  return pair;
 }
 
 DrmDisplayPipeline::~DrmDisplayPipeline() {

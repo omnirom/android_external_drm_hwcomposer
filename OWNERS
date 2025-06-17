@@ -2,3 +2,4 @@ adelva@google.com
 ddavenport@google.com
 jstultz@google.com
 seanpaul@google.com
+include platform/system/core:/janitors/OWNERS #{LAST_RESORT_SUGGESTION}

@@ -25,10 +25,21 @@
 namespace android {
 
 void HwcLayer::SetLayerProperties(const LayerProperties& layer_properties) {
-  if (layer_properties.buffer) {
-    layer_data_.acquire_fence = layer_properties.buffer->acquire_fence;
-    buffer_handle_ = layer_properties.buffer->buffer_handle;
-    buffer_handle_updated_ = true;
+  if (layer_properties.slot_buffer) {
+    auto slot_id = layer_properties.slot_buffer->slot_id;
+    if (!layer_properties.slot_buffer->bi) {
+      slots_.erase(slot_id);
+    } else {
+      slots_[slot_id] = {
+          .bi = layer_properties.slot_buffer->bi.value(),
+          .fb = {},
+      };
+    }
+  }
+  if (layer_properties.active_slot) {
+    active_slot_id_ = layer_properties.active_slot->slot_id;
+    layer_data_.acquire_fence = layer_properties.active_slot->fence;
+    buffer_updated_ = true;
   }
   if (layer_properties.blend_mode) {
     blend_mode_ = layer_properties.blend_mode.value();
@@ -46,8 +57,7 @@ void HwcLayer::SetLayerProperties(const LayerProperties& layer_properties) {
     layer_data_.pi.display_frame = layer_properties.display_frame.value();
   }
   if (layer_properties.alpha) {
-    layer_data_.pi.alpha = std::lround(layer_properties.alpha.value() *
-                                       UINT16_MAX);
+    layer_data_.pi.alpha = layer_properties.alpha.value();
   }
   if (layer_properties.source_crop) {
     layer_data_.pi.source_crop = layer_properties.source_crop.value();
@@ -60,191 +70,43 @@ void HwcLayer::SetLayerProperties(const LayerProperties& layer_properties) {
   }
 }
 
-// NOLINTNEXTLINE(readability-convert-member-functions-to-static)
-HWC2::Error HwcLayer::SetCursorPosition(int32_t /*x*/, int32_t /*y*/) {
-  return HWC2::Error::None;
-}
-
-HWC2::Error HwcLayer::SetLayerBlendMode(int32_t mode) {
-  switch (static_cast<HWC2::BlendMode>(mode)) {
-    case HWC2::BlendMode::None:
-      blend_mode_ = BufferBlendMode::kNone;
-      break;
-    case HWC2::BlendMode::Premultiplied:
-      blend_mode_ = BufferBlendMode::kPreMult;
-      break;
-    case HWC2::BlendMode::Coverage:
-      blend_mode_ = BufferBlendMode::kCoverage;
-      break;
-    default:
-      ALOGE("Unknown blending mode b=%d", mode);
-      blend_mode_ = BufferBlendMode::kUndefined;
-      break;
-  }
-  return HWC2::Error::None;
-}
-
-/* Find API details at:
- * https://cs.android.com/android/platform/superproject/+/android-11.0.0_r3:hardware/libhardware/include/hardware/hwcomposer2.h;l=2314
- */
-HWC2::Error HwcLayer::SetLayerBuffer(buffer_handle_t buffer,
-                                     int32_t acquire_fence) {
-  layer_data_.acquire_fence = MakeSharedFd(acquire_fence);
-  buffer_handle_ = buffer;
-  buffer_handle_updated_ = true;
-
-  return HWC2::Error::None;
-}
-
-// NOLINTNEXTLINE(readability-convert-member-functions-to-static)
-HWC2::Error HwcLayer::SetLayerColor(hwc_color_t /*color*/) {
-  // TODO(nobody): Put to client composition here?
-  return HWC2::Error::None;
-}
-
-HWC2::Error HwcLayer::SetLayerCompositionType(int32_t type) {
-  sf_type_ = static_cast<HWC2::Composition>(type);
-  return HWC2::Error::None;
-}
-
-HWC2::Error HwcLayer::SetLayerDataspace(int32_t dataspace) {
-  switch (dataspace & HAL_DATASPACE_STANDARD_MASK) {
-    case HAL_DATASPACE_STANDARD_BT709:
-      color_space_ = BufferColorSpace::kItuRec709;
-      break;
-    case HAL_DATASPACE_STANDARD_BT601_625:
-    case HAL_DATASPACE_STANDARD_BT601_625_UNADJUSTED:
-    case HAL_DATASPACE_STANDARD_BT601_525:
-    case HAL_DATASPACE_STANDARD_BT601_525_UNADJUSTED:
-      color_space_ = BufferColorSpace::kItuRec601;
-      break;
-    case HAL_DATASPACE_STANDARD_BT2020:
-    case HAL_DATASPACE_STANDARD_BT2020_CONSTANT_LUMINANCE:
-      color_space_ = BufferColorSpace::kItuRec2020;
-      break;
-    default:
-      color_space_ = BufferColorSpace::kUndefined;
-  }
-
-  switch (dataspace & HAL_DATASPACE_RANGE_MASK) {
-    case HAL_DATASPACE_RANGE_FULL:
-      sample_range_ = BufferSampleRange::kFullRange;
-      break;
-    case HAL_DATASPACE_RANGE_LIMITED:
-      sample_range_ = BufferSampleRange::kLimitedRange;
-      break;
-    default:
-      sample_range_ = BufferSampleRange::kUndefined;
-  }
-  return HWC2::Error::None;
-}
-
-HWC2::Error HwcLayer::SetLayerDisplayFrame(hwc_rect_t frame) {
-  layer_data_.pi.display_frame = frame;
-  return HWC2::Error::None;
-}
-
-HWC2::Error HwcLayer::SetLayerPlaneAlpha(float alpha) {
-  layer_data_.pi.alpha = std::lround(alpha * UINT16_MAX);
-  return HWC2::Error::None;
-}
-
-// NOLINTNEXTLINE(readability-convert-member-functions-to-static)
-HWC2::Error HwcLayer::SetLayerSidebandStream(
-    const native_handle_t* /*stream*/) {
-  // TODO(nobody): We don't support sideband
-  return HWC2::Error::Unsupported;
-}
-
-HWC2::Error HwcLayer::SetLayerSourceCrop(hwc_frect_t crop) {
-  layer_data_.pi.source_crop = crop;
-  return HWC2::Error::None;
-}
-
-// NOLINTNEXTLINE(readability-convert-member-functions-to-static)
-HWC2::Error HwcLayer::SetLayerSurfaceDamage(hwc_region_t /*damage*/) {
-  // TODO(nobody): We don't use surface damage, marking as unsupported
-  return HWC2::Error::None;
-}
-
-HWC2::Error HwcLayer::SetLayerTransform(int32_t transform) {
-  uint32_t l_transform = 0;
-
-  // 270* and 180* cannot be combined with flips. More specifically, they
-  // already contain both horizontal and vertical flips, so those fields are
-  // redundant in this case. 90* rotation can be combined with either horizontal
-  // flip or vertical flip, so treat it differently
-  if (transform == HWC_TRANSFORM_ROT_270) {
-    l_transform = LayerTransform::kRotate270;
-  } else if (transform == HWC_TRANSFORM_ROT_180) {
-    l_transform = LayerTransform::kRotate180;
-  } else {
-    if ((transform & HWC_TRANSFORM_FLIP_H) != 0)
-      l_transform |= LayerTransform::kFlipH;
-    if ((transform & HWC_TRANSFORM_FLIP_V) != 0)
-      l_transform |= LayerTransform::kFlipV;
-    if ((transform & HWC_TRANSFORM_ROT_90) != 0)
-      l_transform |= LayerTransform::kRotate90;
-  }
-
-  layer_data_.pi.transform = static_cast<LayerTransform>(l_transform);
-  return HWC2::Error::None;
-}
-
-// NOLINTNEXTLINE(readability-convert-member-functions-to-static)
-HWC2::Error HwcLayer::SetLayerVisibleRegion(hwc_region_t /*visible*/) {
-  // TODO(nobody): We don't use this information, marking as unsupported
-  return HWC2::Error::None;
-}
-
-HWC2::Error HwcLayer::SetLayerZOrder(uint32_t order) {
-  z_order_ = order;
-  return HWC2::Error::None;
-}
-
 void HwcLayer::ImportFb() {
-  if (!IsLayerUsableAsDevice() || !buffer_handle_updated_) {
+  if (!IsLayerUsableAsDevice() || !buffer_updated_ ||
+      !active_slot_id_.has_value()) {
     return;
   }
-  buffer_handle_updated_ = false;
+  buffer_updated_ = false;
 
-  layer_data_.fb = {};
-
-  auto unique_id = BufferInfoGetter::GetInstance()->GetUniqueId(buffer_handle_);
-  if (unique_id && SwChainGetBufferFromCache(*unique_id)) {
-    return;
-  }
-
-  layer_data_.bi = BufferInfoGetter::GetInstance()->GetBoInfo(buffer_handle_);
-  if (!layer_data_.bi) {
-    ALOGW("Unable to get buffer information (0x%p)", buffer_handle_);
-    bi_get_failed_ = true;
+  if (slots_[*active_slot_id_].fb) {
     return;
   }
 
-  layer_data_
-      .fb = parent_->GetPipe().device->GetDrmFbImporter().GetOrCreateFbId(
-      &layer_data_.bi.value());
+  auto& fb_importer = parent_->GetPipe().device->GetDrmFbImporter();
+  auto fb = fb_importer.GetOrCreateFbId(&slots_[*active_slot_id_].bi);
 
-  if (!layer_data_.fb) {
-    ALOGV("Unable to create framebuffer object for buffer 0x%p",
-          buffer_handle_);
+  if (!fb) {
+    ALOGE("Unable to create framebuffer object for layer %p", this);
     fb_import_failed_ = true;
     return;
   }
 
-  if (unique_id) {
-    SwChainAddCurrentBuffer(*unique_id);
-  }
+  slots_[*active_slot_id_].fb = fb;
 }
 
 void HwcLayer::PopulateLayerData() {
   ImportFb();
 
-  if (!layer_data_.bi) {
-    ALOGE("%s: Invalid state", __func__);
+  if (!active_slot_id_.has_value()) {
+    ALOGE("Internal error: populate layer data called without active slot");
     return;
   }
+
+  if (slots_.count(*active_slot_id_) == 0) {
+    return;
+  }
+
+  layer_data_.bi = slots_[*active_slot_id_].bi;
+  layer_data_.fb = slots_[*active_slot_id_].fb;
 
   if (blend_mode_ != BufferBlendMode::kUndefined) {
     layer_data_.bi->blend_mode = blend_mode_;
@@ -257,75 +119,9 @@ void HwcLayer::PopulateLayerData() {
   }
 }
 
-/* SwapChain Cache */
-
-bool HwcLayer::SwChainGetBufferFromCache(BufferUniqueId unique_id) {
-  if (swchain_lookup_table_.count(unique_id) == 0) {
-    return false;
-  }
-
-  auto seq = swchain_lookup_table_[unique_id];
-
-  if (swchain_cache_.count(seq) == 0) {
-    return false;
-  }
-
-  auto& el = swchain_cache_[seq];
-  if (!el.bi) {
-    return false;
-  }
-
-  layer_data_.bi = el.bi;
-  layer_data_.fb = el.fb;
-
-  return true;
-}
-
-void HwcLayer::SwChainReassemble(BufferUniqueId unique_id) {
-  if (swchain_lookup_table_.count(unique_id) != 0) {
-    if (swchain_lookup_table_[unique_id] ==
-        int(swchain_lookup_table_.size()) - 1) {
-      /* Skip same buffer */
-      return;
-    }
-    if (swchain_lookup_table_[unique_id] == 0) {
-      swchain_reassembled_ = true;
-      return;
-    }
-    /* Tracking error */
-    SwChainClearCache();
-    return;
-  }
-
-  swchain_lookup_table_[unique_id] = int(swchain_lookup_table_.size());
-}
-
-void HwcLayer::SwChainAddCurrentBuffer(BufferUniqueId unique_id) {
-  if (!swchain_reassembled_) {
-    SwChainReassemble(unique_id);
-  }
-
-  if (swchain_reassembled_) {
-    if (swchain_lookup_table_.count(unique_id) == 0) {
-      SwChainClearCache();
-      return;
-    }
-
-    auto seq = swchain_lookup_table_[unique_id];
-
-    if (swchain_cache_.count(seq) == 0) {
-      swchain_cache_[seq] = {};
-    }
-
-    swchain_cache_[seq].bi = layer_data_.bi;
-    swchain_cache_[seq].fb = layer_data_.fb;
-  }
-}
-
-void HwcLayer::SwChainClearCache() {
-  swchain_cache_.clear();
-  swchain_lookup_table_.clear();
-  swchain_reassembled_ = false;
+void HwcLayer::ClearSlots() {
+  slots_.clear();
+  active_slot_id_.reset();
 }
 
 }  // namespace android

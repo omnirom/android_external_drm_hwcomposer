@@ -25,6 +25,7 @@
 
 #include "DrmDevice.h"
 #include "bufferinfo/BufferInfoGetter.h"
+#include "compositor/LayerData.h"
 #include "utils/log.h"
 
 namespace android {
@@ -88,22 +89,8 @@ int DrmPlane::Init() {
 
   GetPlaneProperty("zpos", zpos_property_, Presence::kOptional);
 
-  /* DRM/KMS uses counter-clockwise rotations, while HWC API uses
-   * clockwise. That's why 90 and 270 are swapped here.
-   */
   if (GetPlaneProperty("rotation", rotation_property_, Presence::kOptional)) {
-    rotation_property_.AddEnumToMap("rotate-0", LayerTransform::kIdentity,
-                                    transform_enum_map_);
-    rotation_property_.AddEnumToMap("rotate-90", LayerTransform::kRotate270,
-                                    transform_enum_map_);
-    rotation_property_.AddEnumToMap("rotate-180", LayerTransform::kRotate180,
-                                    transform_enum_map_);
-    rotation_property_.AddEnumToMap("rotate-270", LayerTransform::kRotate90,
-                                    transform_enum_map_);
-    rotation_property_.AddEnumToMap("reflect-x", LayerTransform::kFlipH,
-                                    transform_enum_map_);
-    rotation_property_.AddEnumToMap("reflect-y", LayerTransform::kFlipV,
-                                    transform_enum_map_);
+    rotation_property_.GetEnumMask(transform_enum_mask_);
   }
 
   GetPlaneProperty("alpha", alpha_property_, Presence::kOptional);
@@ -121,17 +108,17 @@ int DrmPlane::Init() {
   GetPlaneProperty("IN_FENCE_FD", in_fence_fd_property_, Presence::kOptional);
 
   if (HasNonRgbFormat()) {
-    if (GetPlaneProperty("COLOR_ENCODING", color_encoding_propery_,
+    if (GetPlaneProperty("COLOR_ENCODING", color_encoding_property_,
                          Presence::kOptional)) {
-      color_encoding_propery_.AddEnumToMap("ITU-R BT.709 YCbCr",
-                                           BufferColorSpace::kItuRec709,
-                                           color_encoding_enum_map_);
-      color_encoding_propery_.AddEnumToMap("ITU-R BT.601 YCbCr",
-                                           BufferColorSpace::kItuRec601,
-                                           color_encoding_enum_map_);
-      color_encoding_propery_.AddEnumToMap("ITU-R BT.2020 YCbCr",
-                                           BufferColorSpace::kItuRec2020,
-                                           color_encoding_enum_map_);
+      color_encoding_property_.AddEnumToMap("ITU-R BT.709 YCbCr",
+                                            BufferColorSpace::kItuRec709,
+                                            color_encoding_enum_map_);
+      color_encoding_property_.AddEnumToMap("ITU-R BT.601 YCbCr",
+                                            BufferColorSpace::kItuRec601,
+                                            color_encoding_enum_map_);
+      color_encoding_property_.AddEnumToMap("ITU-R BT.2020 YCbCr",
+                                            BufferColorSpace::kItuRec2020,
+                                            color_encoding_enum_map_);
     }
 
     if (GetPlaneProperty("COLOR_RANGE", color_range_property_,
@@ -143,6 +130,12 @@ int DrmPlane::Init() {
                                          BufferSampleRange::kLimitedRange,
                                          color_range_enum_map_);
     }
+  }
+
+  if (type_ == DRM_PLANE_TYPE_CURSOR &&
+      GetPlaneProperty("SIZE_HINTS", size_hints_property_,
+                       Presence::kOptional)) {
+    size_hints_property_.GetBlobData(size_hints_);
   }
 
   return 0;
@@ -159,11 +152,35 @@ bool DrmPlane::IsCrtcSupported(const DrmCrtc &crtc) const {
     // any CRTC already, which is protected by the plane_switching_crtc function
     // in the kernel drivers/gpu/drm/drm_atomic.c file.
     // The current drm_hwc design is not ready to support such scenario yet,
-    // so adding the CRTC status check here to workaorund for now.
+    // so adding the CRTC status check here to workaround for now.
     return false;
   }
 
   return ((1 << crtc.GetIndexInResArray()) & plane_->possible_crtcs) != 0;
+}
+
+static uint64_t ToDrmRotation(LayerTransform transform) {
+  /* DRM/KMS uses counter-clockwise rotations, while HWC API uses
+   * clockwise. That's why 90 and 270 are swapped here.
+   */
+  uint64_t rotation = DRM_MODE_ROTATE_0;
+
+  if (transform.rotate90) {
+    rotation |= DRM_MODE_ROTATE_270;
+  }
+
+  if (transform.hflip) {
+    rotation |= DRM_MODE_REFLECT_X;
+  }
+
+  if (transform.vflip) {
+    rotation |= DRM_MODE_REFLECT_Y;
+  }
+
+  // TODO(nobody): Respect transform_enum_mask_ to find alternative rotation
+  // values
+
+  return rotation;
 }
 
 bool DrmPlane::IsValidForLayer(LayerData *layer) {
@@ -172,19 +189,13 @@ bool DrmPlane::IsValidForLayer(LayerData *layer) {
     return false;
   }
 
-  if (!rotation_property_) {
-    if (layer->pi.transform != LayerTransform::kIdentity) {
-      ALOGV("No rotation property on plane %d", GetId());
-      return false;
-    }
-  } else {
-    if (transform_enum_map_.count(layer->pi.transform) == 0) {
-      ALOGV("Transform is not supported on plane %d", GetId());
-      return false;
-    }
+  uint64_t drm_rotation = ToDrmRotation(layer->pi.transform);
+  if ((drm_rotation & transform_enum_mask_) != drm_rotation) {
+    ALOGV("Transform is not supported on plane %d", GetId());
+    return false;
   }
 
-  if (!alpha_property_ && layer->pi.alpha != UINT16_MAX) {
+  if (!alpha_property_ && layer->pi.alpha != kAlphaOpaque) {
     ALOGV("Alpha is not supported on plane %d", GetId());
     return false;
   }
@@ -203,6 +214,13 @@ bool DrmPlane::IsValidForLayer(LayerData *layer) {
     return false;
   }
 
+  if (type_ == DRM_PLANE_TYPE_CURSOR &&
+      !IsBufferValidForCursorPlane(layer->bi.value())) {
+    ALOGV("Buffer size %dx%d is not supported by cursor plane %d",
+          layer->bi->width, layer->bi->height, GetId());
+    return false;
+  }
+
   return true;
 }
 
@@ -218,27 +236,6 @@ bool DrmPlane::HasNonRgbFormat() const {
                           }) != std::end(formats_);
 }
 
-static uint64_t ToDrmRotation(LayerTransform transform) {
-  uint64_t rotation = 0;
-  /* DRM/KMS uses counter-clockwise rotations, while HWC API uses
-   * clockwise. That's why 90 and 270 are swapped here.
-   */
-  if ((transform & LayerTransform::kFlipH) != 0)
-    rotation |= DRM_MODE_REFLECT_X;
-  if ((transform & LayerTransform::kFlipV) != 0)
-    rotation |= DRM_MODE_REFLECT_Y;
-  if ((transform & LayerTransform::kRotate90) != 0)
-    rotation |= DRM_MODE_ROTATE_270;
-  else if ((transform & LayerTransform::kRotate180) != 0)
-    rotation |= DRM_MODE_ROTATE_180;
-  else if ((transform & LayerTransform::kRotate270) != 0)
-    rotation |= DRM_MODE_ROTATE_90;
-  else
-    rotation |= DRM_MODE_ROTATE_0;
-
-  return rotation;
-}
-
 /* Convert float to 16.16 fixed point */
 static int To1616FixPt(float in) {
   constexpr int kBitShift = 16;
@@ -246,7 +243,8 @@ static int To1616FixPt(float in) {
 }
 
 auto DrmPlane::AtomicSetState(drmModeAtomicReq &pset, LayerData &layer,
-                              uint32_t zpos, uint32_t crtc_id) -> int {
+                              uint32_t zpos, uint32_t crtc_id,
+                              DstRectInfo &whole_display_rect) -> int {
   if (!layer.fb || !layer.bi) {
     ALOGE("%s: Invalid arguments", __func__);
     return -EINVAL;
@@ -268,8 +266,31 @@ auto DrmPlane::AtomicSetState(drmModeAtomicReq &pset, LayerData &layer,
     return -EINVAL;
   }
 
-  auto &disp = layer.pi.display_frame;
-  auto &src = layer.pi.source_crop;
+  auto opt_disp = layer.pi.display_frame.i_rect;
+  if (!layer.pi.display_frame.i_rect) {
+    opt_disp = whole_display_rect.i_rect;
+  }
+
+  auto opt_src = layer.pi.source_crop.f_rect;
+  if (!layer.pi.source_crop.f_rect) {
+    opt_src = {0.0F, 0.0F, float(layer.bi->width), float(layer.bi->height)};
+  }
+
+  if (!opt_disp || !opt_src) {
+    ALOGE("%s: Invalid display frame or source crop", __func__);
+    return -EINVAL;
+  }
+
+  auto disp = opt_disp.value();
+  auto src = opt_src.value();
+
+  if (type_ == DRM_PLANE_TYPE_CURSOR) {
+    disp.right = disp.left + static_cast<int>(layer.bi->width);
+    disp.bottom = disp.top + static_cast<int>(layer.bi->height);
+    src = {0, 0, static_cast<float>(layer.bi->width),
+           static_cast<float>(layer.bi->height)};
+  }
+
   if (!crtc_property_.AtomicSet(pset, crtc_id) ||
       !fb_property_.AtomicSet(pset, layer.fb->GetFbId()) ||
       !crtc_x_property_.AtomicSet(pset, disp.left) ||
@@ -288,7 +309,9 @@ auto DrmPlane::AtomicSetState(drmModeAtomicReq &pset, LayerData &layer,
     return -EINVAL;
   }
 
-  if (alpha_property_ && !alpha_property_.AtomicSet(pset, layer.pi.alpha)) {
+  if (alpha_property_ &&
+      !alpha_property_.AtomicSet(pset,
+                                 std::lround(layer.pi.alpha * UINT16_MAX))) {
     return -EINVAL;
   }
 
@@ -299,7 +322,7 @@ auto DrmPlane::AtomicSetState(drmModeAtomicReq &pset, LayerData &layer,
   }
 
   if (color_encoding_enum_map_.count(layer.bi->color_space) != 0 &&
-      !color_encoding_propery_
+      !color_encoding_property_
            .AtomicSet(pset, color_encoding_enum_map_[layer.bi->color_space])) {
     return -EINVAL;
   }
@@ -337,6 +360,23 @@ auto DrmPlane::GetPlaneProperty(const char *prop_name, DrmProperty &property,
   }
 
   return true;
+}
+
+bool DrmPlane::HasCursorSizeConstraints() const {
+  return drm_->GetCapCursorSize().has_value() || !size_hints_.empty();
+}
+
+bool DrmPlane::IsBufferValidForCursorPlane(const BufferInfo &bi) const {
+  if (std::find_if(size_hints_.begin(), size_hints_.end(),
+                   [&](const auto &hint) -> bool {
+                     return bi.width == hint.width && bi.height == hint.height;
+                   }) != size_hints_.end()) {
+    return true;
+  }
+
+  const auto &cap_size = drm_->GetCapCursorSize();
+  return cap_size.has_value() && bi.width == cap_size->first &&
+         bi.height == cap_size->second;
 }
 
 }  // namespace android

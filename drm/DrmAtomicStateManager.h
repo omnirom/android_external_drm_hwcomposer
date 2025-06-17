@@ -40,6 +40,8 @@ struct AtomicCommitArgs {
   std::shared_ptr<drm_color_ctm> color_matrix;
   std::optional<Colorspace> colorspace;
   std::optional<int32_t> content_type;
+  std::shared_ptr<hdr_output_metadata> hdr_metadata;
+  std::optional<int32_t> min_bpc;
 
   std::shared_ptr<DrmFbIdHandle> writeback_fb;
   SharedFd writeback_release_fence;
@@ -84,6 +86,7 @@ class DrmAtomicStateManager {
 
     DrmModeUserPropertyBlobUnique mode_blob;
     DrmModeUserPropertyBlobUnique ctm_blob;
+    DrmModeUserPropertyBlobUnique hdr_metadata_blob;
 
     int release_fence_pt_index{};
 
@@ -107,6 +110,8 @@ class DrmAtomicStateManager {
   SharedFd last_present_fence_;
   int frames_staged_{};
   int frames_tracked_{};
+
+  DstRectInfo whole_display_rect_{};
 
   void ThreadFn(const std::shared_ptr<DrmAtomicStateManager> &dasm);
   std::condition_variable cv_;

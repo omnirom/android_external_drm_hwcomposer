@@ -1,0 +1,12 @@
+{
+  "presubmit": [
+    {
+      "name": "VtsHalGraphicsComposer3_TargetTest"
+    }
+  ],
+  "desktop-presubmit": [
+    {
+      "name": "VtsHalGraphicsComposer3_TargetTest"
+    }
+  ]
+}
