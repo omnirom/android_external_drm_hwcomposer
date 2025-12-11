@@ -23,9 +23,10 @@ license {
     visibility: [":__subpackages__"],
     license_kinds: [
         "SPDX-license-identifier-Apache-2.0",
+        "SPDX-license-identifier-MIT",
     ],
     license_text: [
-        "NOTICE",
+        "LICENSE",
     ],
 }
 
@@ -42,6 +43,9 @@ cc_defaults {
     name: "hwcomposer.drm_defaults",
 
     shared_libs: [
+        "drm_hwcomposer_atom_reporter",
+
+        "libbase",
         "libcutils",
         "libdrm",
         "libhardware",
@@ -68,8 +72,6 @@ cc_defaults {
 
     cppflags: [
         "-DHAS_LIBDISPLAY_INFO",
-        "-DHWC2_INCLUDE_STRINGIFICATION",
-        "-DHWC2_USE_CPP11",
     ],
 
     cpp_std: "gnu++17",
@@ -111,15 +113,24 @@ filegroup {
         "backend/BackendClient.cpp",
         "backend/BackendManager.cpp",
 
-        "hwc2_device/DrmHwcTwo.cpp",
-        "hwc2_device/HwcDisplay.cpp",
-        "hwc2_device/HwcDisplayConfigs.cpp",
-        "hwc2_device/HwcLayer.cpp",
-        "hwc2_device/hwc2_device.cpp",
+        "hwc/HwcDisplay.cpp",
+        "hwc/HwcDisplayConfigs.cpp",
+        "hwc/HwcLayer.cpp",
+
+        "stats/CompositionStats.cpp",
+        "stats/CompositionStatsPoller.cpp",
 
         "utils/LibdisplayEdidWrapper.cpp",
         "utils/fd.cpp",
         "utils/properties.cpp",
+    ],
+}
+
+filegroup {
+    name: "drm_hwcomposer_hwc2",
+    srcs: [
+        "hwc2_device/DrmHwcTwo.cpp",
+        "hwc2_device/hwc2_device.cpp",
     ],
 }
 
@@ -129,7 +140,6 @@ filegroup {
         "hwc3/Composer.cpp",
         "hwc3/ComposerClient.cpp",
         "hwc3/DrmHwcThree.cpp",
-        "hwc3/Utils.cpp",
     ],
 }
 
@@ -164,11 +174,11 @@ cc_defaults {
     ],
 
     defaults: [
+        "android.hardware.graphics.composer3-ndk_shared",
         "hwcomposer.drm_defaults",
     ],
 
     shared_libs: [
-        "android.hardware.graphics.composer3-V4-ndk",
         "libbase",
         "libbinder_ndk",
         "liblog",
@@ -179,11 +189,6 @@ cc_defaults {
         "-DUSE_IMAPPER4_METADATA_API",
         "-Wall",
         "-Werror",
-    ],
-
-    cppflags: [
-        "-DHWC2_INCLUDE_STRINGIFICATION",
-        "-DHWC2_USE_CPP11",
     ],
 }
 
@@ -282,4 +287,62 @@ apex {
         "drm_hwcomposer_hwc3_apex_init_rc",
         "drm_hwcomposer_hwc3_apex_vintf",
     ],
+}
+
+cc_test_host {
+    name: "drm_hwcomposer_unittests",
+    srcs: [
+        "stats/CompositionStats.cpp",
+        "stats/CompositionStatsTest.cpp",
+    ],
+    static_libs: [
+        "libgmock",
+        "libgtest",
+    ],
+}
+
+soong_config_module_type {
+    name: "drm_hwcomposer_atom_reporter_library",
+    module_type: "cc_library",
+    config_namespace: "DRMHWC",
+    variables: [
+        "atom_reporter",
+    ],
+    properties: [
+        "shared_libs",
+        "srcs",
+    ],
+}
+
+soong_config_string_variable {
+    name: "atom_reporter",
+    values: ["desktop"],
+}
+
+drm_hwcomposer_atom_reporter_library {
+    name: "drm_hwcomposer_atom_reporter",
+    shared_libs: [
+        "libc++",
+        "liblog",
+    ],
+    soong_config_variables: {
+        atom_reporter: {
+            desktop: {
+                srcs: [
+                    "stats/CompositionStatsAtomReporterDesktop.cpp",
+                ],
+                shared_libs: [
+                    "android.frameworks.stats-V2-ndk",
+                    "libbinder_ndk",
+                    "libdesktopatoms",
+                ],
+            },
+            conditions_default: {
+                srcs: [
+                    "stats/CompositionStatsAtomReporter.cpp",
+                ],
+            },
+        },
+    },
+    vendor: true,
 }

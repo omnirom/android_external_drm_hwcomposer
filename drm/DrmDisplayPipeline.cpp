@@ -30,7 +30,7 @@
 namespace android {
 
 template <class O>
-auto PipelineBindable<O>::BindPipeline(DrmDisplayPipeline *pipeline,
+auto PipelineBindable<O>::BindPipeline(const DrmDisplayPipeline *pipeline,
                                        bool return_object_if_bound)
     -> std::shared_ptr<BindingOwner<O>> {
   auto owner_object = owner_object_.lock();
@@ -161,7 +161,7 @@ auto DrmDisplayPipeline::CreatePipeline(DrmConnector &connector)
   return {};
 }
 
-auto DrmDisplayPipeline::GetUsablePlanes() -> UsablePlanes {
+auto DrmDisplayPipeline::GetUsablePlanes() const -> UsablePlanes {
   UsablePlanes pair;
   auto &[planes, cursor] = pair;
 
@@ -189,6 +189,18 @@ auto DrmDisplayPipeline::GetUsablePlanes() -> UsablePlanes {
   }
 
   return pair;
+}
+
+DrmConnector *DrmDisplayPipeline::FindWritebackConnectorForPipeline() const {
+  for (const auto &wb_connector : device->GetWritebackConnectors()) {
+    for (const auto &encoder : device->GetEncoders()) {
+      if (wb_connector->SupportsEncoder(*encoder) &&
+          encoder->SupportsCrtc(*(crtc->Get()))) {
+        return wb_connector.get();
+      }
+    }
+  }
+  return nullptr;
 }
 
 DrmDisplayPipeline::~DrmDisplayPipeline() {

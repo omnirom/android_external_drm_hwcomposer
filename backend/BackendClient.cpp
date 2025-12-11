@@ -17,17 +17,13 @@
 #include "BackendClient.h"
 
 #include "BackendManager.h"
+#include "hwc/HwcDisplay.h"
 
 namespace android {
 
-HWC2::Error BackendClient::ValidateDisplay(HwcDisplay *display,
-                                           uint32_t *num_types,
-                                           uint32_t * /*num_requests*/) {
-  for (auto &[layer_handle, layer] : display->layers()) {
-    layer.SetValidatedType(HWC2::Composition::Client);
-    ++*num_types;
-  }
-  return HWC2::Error::HasChanges;
+auto BackendClient::ValidateDisplay(HwcDisplay* display)
+    -> ValidatedComposition {
+  return GetFlattenedComposition(display->GetOrderLayersByZPos());
 }
 
 // clang-format off

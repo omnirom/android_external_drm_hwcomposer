@@ -7,10 +7,12 @@ CLANG := clang++-19
 CLANG_TIDY := clang-tidy-19
 OUT_DIR := /tmp/drm_hwcomposer/build
 SRC_DIR := .
+ANDROID_SDK_VERSION ?= 36
 
 CXXFLAGS := -Wall -Wextra -Werror -Wno-missing-designated-field-initializers
 CXXFLAGS += -D_LIBCPP_ENABLE_THREAD_SAFETY_ANNOTATIONS -Wthread-safety
 CXXFLAGS += -fvisibility-inlines-hidden -std=gnu++17 -DHWC2_USE_CPP11 -DHWC2_INCLUDE_STRINGIFICATION -fno-rtti
+CXXFLAGS += --target=aarch64-linux-android$(ANDROID_SDK_VERSION)
 
 CXXARGS := $(shell cat $(BASE_DIR)/toolchain_wrapper/sharedlib.cppflags)
 CXXARGS := $(subst [BASE_DIR],$(BASE_DIR),$(CXXARGS))
@@ -29,8 +31,8 @@ TIDY_FILES_OVERRIDE := \
     drm/DrmUnique.h:FINE                                \
     hwc2_device/DrmHwcTwo.cpp:COARSE                    \
     hwc2_device/DrmHwcTwo.h:COARSE                      \
-    hwc2_device/HwcDisplay.cpp:COARSE                   \
-    hwc2_device/HwcDisplay.h:COARSE                     \
+    hwc/HwcDisplay.cpp:COARSE                           \
+    hwc/HwcDisplay.h:COARSE                             \
     utils/log.h:FINE                                    \
     utils/properties.h:FINE                             \
 
@@ -93,6 +95,9 @@ clean:
 	rm -rf $(OUT_DIR)/
 
 # Build
+# clang-tidy picks up gtest and gmock headers
+# IStats includes are not available in aospless
+SKIP_FILES := stats/CompositionStatsTest.cpp stats/CompositionStatsAtomReporterDesktop.cpp
 
 BUILD_FILES_AUTO := $(shell find -L $(SRC_DIR) -not -path '*/\.*' -not -path '*/tests/test_include/*' -path '*.cpp')
 SKIP_FILES_path := $(foreach file,$(SKIP_FILES),$(SRC_DIR)/$(file))

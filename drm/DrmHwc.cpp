@@ -25,8 +25,45 @@
 #include "utils/properties.h"
 
 namespace android {
+namespace {
+// Helper functions for implementing dumpsys support.
+std::string DumpStats(const CompositionStats &stats) {
+  if (stats.total_pixops == 0)
+    return "No stats yet";
 
-DrmHwc::DrmHwc() : resource_manager_(this) {};
+  // NOLINTNEXTLINE(readability-magic-numbers)
+  auto ratio = 1.0 - (double(stats.gpu_pixops) / double(stats.total_pixops));
+
+  std::stringstream ss;
+  ss << " Total frames count: " << stats.total_frames << "\n"
+     << " Failed cursor test commit frames: "
+     << stats.failed_kms_cursor_validate << "\n"
+     << " Failed to test commit frames: " << stats.failed_kms_validate << "\n"
+     << " Failed to commit frames: " << stats.failed_kms_present << "\n"
+     << ((stats.failed_kms_present > 0)
+             ? " !!! Internal failure, FIX it please\n"
+             : "")
+     << " Flattened frames: " << stats.frames_flattened << "\n"
+     << " Cursor plane frames: " << stats.cursor_plane_frames << "\n"
+     << " Pixel operations (free units) : [TOTAL: " << stats.total_pixops
+     << " / GPU: " << stats.gpu_pixops << "]\n"
+     << " Composition efficiency: " << ratio;
+  return ss.str();
+}
+
+std::string DumpDisplayStats(HwcDisplay *display, const CompositionStats &stats,
+                             const CompositionStats &delta) {
+  std::stringstream ss;
+  ss << "- Display on: " << display->GetDisplayName() << "\n"
+     << "Statistics since system boot:\n"
+     << DumpStats(stats) << "\n\n"
+     << "Statistics since last dumpsys request:\n"
+     << DumpStats(delta) << "\n\n";
+  return ss.str();
+}
+}  // namespace
+
+DrmHwc::DrmHwc() : resource_manager_(this), dump_stats_tracker_(this) {};
 
 /* Must be called after every display attach/detach cycle */
 void DrmHwc::FinalizeDisplayBinding() {
@@ -34,7 +71,7 @@ void DrmHwc::FinalizeDisplayBinding() {
     /* Primary display MUST always exist */
     ALOGI("No pipelines available. Creating null-display for headless mode");
     displays_[kPrimaryDisplay] = std::make_unique<
-        HwcDisplay>(kPrimaryDisplay, HWC2::DisplayType::Physical, this);
+        HwcDisplay>(kPrimaryDisplay, /* is_virtual */ false, this);
     /* Initializes null-display */
     displays_[kPrimaryDisplay]->SetPipeline({});
   }
@@ -55,16 +92,10 @@ void DrmHwc::FinalizeDisplayBinding() {
   }
   deferred_hotplug_events_.clear();
 
-  /* Wait 0.2s before removing the displays to flush pending HWC2 transactions
-   */
-  auto &mutex = GetResMan().GetMainLock();
-  mutex.unlock();
-  const int time_for_sf_to_dispose_display_us = 200000;
-  usleep(time_for_sf_to_dispose_display_us);
-  mutex.lock();
   for (auto handle : displays_for_removal_list_) {
     displays_.erase(handle);
   }
+  displays_for_removal_list_.clear();
 }
 
 bool DrmHwc::BindDisplay(std::shared_ptr<DrmDisplayPipeline> pipeline) {
@@ -83,7 +114,7 @@ bool DrmHwc::BindDisplay(std::shared_ptr<DrmDisplayPipeline> pipeline) {
 
   if (displays_.count(disp_handle) == 0) {
     auto disp = std::make_unique<HwcDisplay>(disp_handle,
-                                             HWC2::DisplayType::Physical, this);
+                                             /* is_virtual */ false, this);
     displays_[disp_handle] = std::move(disp);
   }
 
@@ -115,10 +146,7 @@ bool DrmHwc::UnbindDisplay(std::shared_ptr<DrmDisplayPipeline> pipeline) {
   }
   displays_[handle]->SetPipeline({});
 
-  /* We must defer display disposal and removal, since it may still have pending
-   * HWC_API calls scheduled and waiting until ueventlistener thread releases
-   * main lock, otherwise transaction may fail and SF may crash
-   */
+  /* Defer destruction of the display until after the hotplug event is sent. */
   if (handle != kPrimaryDisplay) {
     displays_for_removal_list_.emplace_back(handle);
   }
@@ -135,65 +163,69 @@ void DrmHwc::NotifyDisplayLinkStatus(
                        DisplayStatus::kLinkTrainingFailed);
 }
 
-HWC2::Error DrmHwc::CreateVirtualDisplay(
-    uint32_t width, uint32_t height,
-    int32_t *format,  // NOLINT(readability-non-const-parameter)
-    hwc2_display_t *display) {
-  ALOGI("Creating virtual display %dx%d format %d", width, height, *format);
+std::optional<DisplayHandle> DrmHwc::CreateVirtualDisplay(uint32_t width,
+                                                          uint32_t height) {
+  ALOGI("Creating virtual display %dx%d", width, height);
 
   auto virtual_pipeline = resource_manager_.GetVirtualDisplayPipeline();
   if (!virtual_pipeline)
-    return HWC2::Error::Unsupported;
+    return std::nullopt;
 
-  *display = ++last_display_handle_;
-  auto disp = std::make_unique<HwcDisplay>(*display, HWC2::DisplayType::Virtual,
-                                           this);
+  DisplayHandle new_display_handle = ++last_display_handle_;
+  auto disp = std::make_unique<HwcDisplay>(new_display_handle,
+                                           /* is_virtual */ true, this);
 
   disp->SetVirtualDisplayResolution(width, height);
   disp->SetPipeline(virtual_pipeline);
-  displays_[*display] = std::move(disp);
-  return HWC2::Error::None;
+  displays_[new_display_handle] = std::move(disp);
+  return new_display_handle;
 }
 
-HWC2::Error DrmHwc::DestroyVirtualDisplay(hwc2_display_t display) {
+bool DrmHwc::DestroyVirtualDisplay(DisplayHandle display) {
   ALOGI("Destroying virtual display %" PRIu64, display);
 
   if (displays_.count(display) == 0) {
     ALOGE("Trying to destroy non-existent display %" PRIu64, display);
-    return HWC2::Error::BadDisplay;
+    return false;
+  }
+
+  if (displays_[display]->GetDisplayType() !=
+      HwcDisplay::DisplayType::kVirtual) {
+    ALOGE("Trying to destroy non-virtual display %" PRIu64, display);
+    return false;
   }
 
   displays_[display]->SetPipeline({});
-
-  /* Wait 0.2s before removing the displays to flush pending HWC2 transactions
-   */
-  auto &mutex = GetResMan().GetMainLock();
-  mutex.unlock();
-  const int time_for_sf_to_dispose_display_us = 200000;
-  usleep(time_for_sf_to_dispose_display_us);
-  mutex.lock();
-
   displays_.erase(display);
-
-  return HWC2::Error::None;
+  return true;
 }
 
-void DrmHwc::Dump(uint32_t *out_size, char *out_buffer) {
-  if (out_buffer != nullptr) {
-    auto copied_bytes = dump_string_.copy(out_buffer, *out_size);
-    *out_size = static_cast<uint32_t>(copied_bytes);
-    return;
+auto DrmHwc::PullCompositionStats()
+    -> std::map<DisplayHandle, CompositionStats> {
+  std::map<int64_t, CompositionStats> stats;
+  for (auto &[display_handle, display] : displays_) {
+    stats[static_cast<int64_t>(display_handle)] = display->total_stats();
   }
+  return stats;
+}
 
+std::string DrmHwc::DumpState() {
   std::stringstream output;
 
   output << "-- drm_hwcomposer --\n\n";
 
-  for (auto &disp : displays_)
-    output << disp.second->Dump();
-
-  dump_string_ = output.str();
-  *out_size = static_cast<uint32_t>(dump_string_.size());
+  auto callback = [this, &output](int64_t display_handle,
+                                  const CompositionStats &stats,
+                                  const CompositionStats &delta) {
+    auto *display = GetDisplay(display_handle);
+    ALOGE_IF(display == nullptr, "Display %" PRIu64 " not found",
+             display_handle);
+    if (display) {
+      output << DumpDisplayStats(display, stats, delta);
+    }
+  };
+  dump_stats_tracker_.ReportStats(callback);
+  return output.str();
 }
 
 uint32_t DrmHwc::GetMaxVirtualDisplayCount() {

@@ -1,52 +1,141 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC1091 # no need to follow references to other shell scripts
+# Bump the UBUNTU_AOSPLESS_TAG for changes in this file to take effect.
 
-# For any changes to this file to take effect, the UBUNTU_HWC_TAG has
-# to be bumped to generate a new image.
+set -e
 
-set -ex
+source "${FDO_CI_BASH_HELPERS}"
 
 DEPS=(
-    clang
-    llvm
-    clang-19
-    clang-tidy-19
-    clang-format-19
-    ca-certificates
-    git
-    libdrm-dev
-    blueprint-tools
-    libgtest-dev
-    make
-    python3
-    wget
-    sudo
-    rsync
-    lld
-    pkg-config
-    ninja-build
-    meson
-    python3-mako
-    python3-jinja2
-    python3-ply
-    python3-yaml
-    wget
-    gnupg
-    xz-utils
+  ca-certificates
+  git
+  wget
+  xz-utils
+)
+
+DEPS_FOR_AOSP=(
+  curl
+  gpg
+  gpg-agent
+  ssh
+)
+
+DEPS_FOR_BUILD=(
+  clang
+  clang-19
+  git
+  lld
+  llvm
+  make
+  meson
+  pkg-config
+  rsync
+)
+
+DEPS_FOR_TIDY=(
+  clang-tidy-19
+)
+
+DEPS_FOR_CHECK=(
+  blueprint-tools
+  clang-format-19
 )
 
 export DEBIAN_FRONTEND=noninteractive
 
+fdo_log_section_start_collapsed install_packages "install_packages"
 apt-get update
 apt-get upgrade -y
-
 apt-get install -y --no-remove --no-install-recommends "${DEPS[@]}"
+apt-get install -y --no-remove --no-install-recommends "${DEPS_FOR_AOSP[@]}"
+apt-get install -y --no-remove --no-install-recommends "${DEPS_FOR_BUILD[@]}"
+apt-get install -y --no-remove --no-install-recommends "${DEPS_FOR_TIDY[@]}"
+apt-get install -y --no-remove --no-install-recommends "${DEPS_FOR_CHECK[@]}"
 
-wget https://gitlab.freedesktop.org/-/project/5/uploads/cafa930dad28acf7ee44d50101d5e8f0/aospless_drm_hwcomposer_arm64.tar.xz
+curl -o /usr/local/bin/repo https://storage.googleapis.com/git-repo-downloads/repo
+chmod a+x /usr/local/bin/repo
+fdo_log_section_end install_packages
 
-sha256sum aospless_drm_hwcomposer_arm64.tar.xz
-if echo f792b1140861112f80c8a3a22e1af8e3eccf4910fe4449705e62d2032b713bf9 aospless_drm_hwcomposer_arm64.tar.xz | sha256sum --check; then
-    tar --no-same-owner -xf aospless_drm_hwcomposer_arm64.tar.xz -C /
+fdo_log_section_start_collapsed repo_init "repo_init"
+TOP="$(pwd)/aosp"
+mkdir "${TOP}"
+cd "${TOP}"
+
+: "${ANDROID_BRANCH:?ANDROID_BRANCH is not set}"
+
+yes n | repo init \
+  -u https://android.googlesource.com/platform/manifest \
+  -b "${ANDROID_BRANCH}" \
+  --depth=1
+time repo sync --fail-fast --no-tags -j2
+fdo_log_section_end repo_init
+
+fdo_log_section_start_collapsed customize_repo "customize_repo"
+DRMHWC_DIR="${TOP}/external/drm_hwcomposer"
+
+rm "${DRMHWC_DIR}" -rf
+
+git clone "${CI_REPOSITORY_URL}" "${DRMHWC_DIR}"
+if [[ "${CI_PIPELINE_SOURCE}" == "merge_request_event" ]]; then
+  git -C "${DRMHWC_DIR}" fetch origin "${CI_MERGE_REQUEST_REF_PATH}"
 else
-    echo "Tar file check failed"
-    exit 1
+  git -C "${DRMHWC_DIR}" fetch origin "${CI_COMMIT_REF_NAME}"
 fi
+git -C "${DRMHWC_DIR}" checkout FETCH_HEAD
+
+git clone https://github.com/GloDroid/aospext.git
+
+cat >> "${TOP}/device/google/cuttlefish/shared/device.mk" <<EOF
+BOARD_BUILD_AOSPEXT_DRMHWCOMPOSER := true
+BOARD_DRMHWCOMPOSER_SRC_DIR := external/drm_hwcomposer
+EOF
+
+ALLOW_MK_x86_64="${TOP}/device/google/cuttlefish/vsoc_x86_64_only/phone/aosp_cf.mk"
+sed -i '/^PRODUCT_ALLOWED_ANDROIDMK_FILES := art\/Android.mk$/ s|$| aospext/Android.mk aospext/**/Android.mk|' \
+  "${ALLOW_MK_x86_64}"
+
+ALLOW_MK_arm64="${TOP}/device/google/cuttlefish/vsoc_arm64_only/phone/aosp_cf.mk"
+sed -i '/^PRODUCT_ALLOWED_ANDROIDMK_FILES := art\/Android.mk$/ s|$| aospext/Android.mk aospext/**/Android.mk|' \
+  "${ALLOW_MK_arm64}"
+
+fdo_log_section_end customize_repo
+
+fdo_log_section_start_collapsed build_aospless_x86_64 "build_aospless_x86_64"
+source build/envsetup.sh
+cd "${TOP}/aospext"
+export TARGET_BUILD_VARIANT=userdebug # needed for adb root and remount
+export TARGET_PRODUCT=aosp_cf_x86_64_slim
+export TARGET_RELEASE=bp2a
+
+# Disable LLVM Link-Time-Optimization so that the aospless artifacts will
+# have full object files for linking rather than raw bitcode
+export DISABLE_LTO=true
+
+lunch "${TARGET_PRODUCT}-${TARGET_RELEASE}-${TARGET_BUILD_VARIANT}"
+
+mm
+cd "${TOP}/out/target/product/vsoc_x86_64_only/obj/AOSPEXT/DRMHWCOMPOSER/"
+make gen_aospless
+tar --no-same-owner -xf aospless.tar.gz
+# Rename and move the artifacts needed for subsequent jobs to the root directory
+cp -r "${TOP}/out/target/product/vsoc_x86_64_only/obj/AOSPEXT/DRMHWCOMPOSER/aospless" \
+  "/aospless_x86_64"
+fdo_log_section_end build_aospless_x86_64
+
+
+fdo_log_section_start_collapsed build_aospless_arm64 "build_aospless_arm64"
+cd "${TOP}/aospext"
+export TARGET_BUILD_VARIANT=userdebug # needed for adb root and remount
+export TARGET_PRODUCT=aosp_cf_arm64_slim
+export TARGET_RELEASE=bp2a
+lunch "${TARGET_PRODUCT}-${TARGET_RELEASE}-${TARGET_BUILD_VARIANT}"
+mm
+cd "${TOP}/out/target/product/vsoc_arm64_only/obj/AOSPEXT/DRMHWCOMPOSER/"
+make gen_aospless
+tar --no-same-owner -xf aospless.tar.gz
+# Rename and move the artifacts needed for subsequent jobs to the root directory
+cp -r "./aospless" "/aospless_arm64"
+fdo_log_section_end build_aospless_arm64
+
+# clean up
+rm "${TOP}" -rf

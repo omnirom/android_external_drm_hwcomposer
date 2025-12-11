@@ -53,11 +53,14 @@ class DrmDevice {
   }
 
   auto GetConnectors() -> const std::vector<std::unique_ptr<DrmConnector>> &;
-  auto GetWritebackConnectors()
-      -> const std::vector<std::unique_ptr<DrmConnector>> &;
   auto GetPlanes() -> const std::vector<std::unique_ptr<DrmPlane>> &;
   auto GetCrtcs() -> const std::vector<std::unique_ptr<DrmCrtc>> &;
   auto GetEncoders() -> const std::vector<std::unique_ptr<DrmEncoder>> &;
+
+  auto GetWritebackConnectors()
+      -> const std::vector<std::unique_ptr<DrmConnector>> & {
+    return writeback_connectors_;
+  }
 
   auto GetMinResolution() const {
     return min_resolution_;
@@ -109,6 +112,8 @@ class DrmDevice {
   const std::optional<std::pair<uint64_t, uint64_t>> &GetCapCursorSize() const {
     return cap_cursor_size_;
   }
+
+  auto RefreshConnectors() -> void;
 
  private:
   explicit DrmDevice(ResourceManager *res_man, uint32_t index);

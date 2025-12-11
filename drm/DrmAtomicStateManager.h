@@ -20,6 +20,7 @@
 
 #include <memory>
 #include <optional>
+#include <queue>
 
 #include "compositor/DisplayInfo.h"
 #include "compositor/DrmKmsPlan.h"
@@ -30,16 +31,36 @@
 
 namespace android {
 
+// Collection of kms objects that were committed to the kernel. There must be
+// a userspace handle to keep these from being removed/unregistered until the
+// commit that used them is no longer being presented.
+struct KmsObjects {
+  /* We have to hold a reference to framebuffer while displaying it ,
+   * otherwise picture will blink */
+  std::vector<std::shared_ptr<DrmFbIdHandle>> framebuffers;
+  std::vector<DrmModeUserPropertyBlobUnique> blobs;
+};
+
+struct KmsState {
+  /* Required to cleanup unused planes */
+  std::vector<std::shared_ptr<BindingOwner<DrmPlane>>> used_planes;
+
+  /* To avoid setting the inactive state twice, which will fail the commit */
+  bool crtc_active_state{};
+};
+
 struct AtomicCommitArgs {
   /* inputs. All fields are optional, but at least one has to be specified */
   bool test_only = false;
   bool blocking = false;
+  bool teardown = false;
+  bool seamless = false;
   std::optional<DrmMode> display_mode;
   std::optional<bool> active;
   std::shared_ptr<DrmKmsPlan> composition;
   std::shared_ptr<drm_color_ctm> color_matrix;
   std::optional<Colorspace> colorspace;
-  std::optional<int32_t> content_type;
+  std::optional<ContentType> content_type;
   std::shared_ptr<hdr_output_metadata> hdr_metadata;
   std::optional<int32_t> min_bpc;
 
@@ -47,7 +68,15 @@ struct AtomicCommitArgs {
   SharedFd writeback_release_fence;
 
   /* out */
+  KmsState new_frame_state;
+  KmsObjects used_kms_objects;
+  SharedFd out_writeback_complete_fence;
   SharedFd out_fence;
+  // Shared FD can't be initiallized to an invalid value, for now we keep
+  // the address separate from the FD for initialization.
+  // TODO: look into adding support for invalid fences.
+  int wb_fence_address = -1;
+  int out_fence_address = -1;
 
   /* helpers */
   auto HasInputs() const -> bool {
@@ -60,63 +89,66 @@ class DrmAtomicStateManager {
   static auto CreateInstance(DrmDisplayPipeline *pipe)
       -> std::shared_ptr<DrmAtomicStateManager>;
 
-  ~DrmAtomicStateManager() = default;
+  ~DrmAtomicStateManager();
 
-  auto ExecuteAtomicCommit(AtomicCommitArgs &args) -> int;
+  bool ExecuteAtomicCommit(AtomicCommitArgs &args);
   auto ActivateDisplayUsingDPMS() -> int;
+
+  void CleanFailedCommit();
 
   void StopThread() {
     {
-      const std::unique_lock lock(mutex_);
+      const std::lock_guard lock(mutex_);
       exit_thread_ = true;
     }
     cv_.notify_all();
   }
 
  private:
+  void ThreadFn();
+
   DrmAtomicStateManager() = default;
-  auto CommitFrame(AtomicCommitArgs &args) -> int;
+  bool CommitFrame(AtomicCommitArgs &args);
 
-  struct KmsState {
-    /* Required to cleanup unused planes */
-    std::vector<std::shared_ptr<BindingOwner<DrmPlane>>> used_planes;
-    /* We have to hold a reference to framebuffer while displaying it ,
-     * otherwise picture will blink */
-    std::vector<std::shared_ptr<DrmFbIdHandle>> used_framebuffers;
-
-    DrmModeUserPropertyBlobUnique mode_blob;
-    DrmModeUserPropertyBlobUnique ctm_blob;
-    DrmModeUserPropertyBlobUnique hdr_metadata_blob;
-
-    int release_fence_pt_index{};
-
-    /* To avoid setting the inactive state twice, which will fail the commit */
-    bool crtc_active_state{};
-  } active_frame_state_;
-
-  auto NewFrameState() -> KmsState {
-    auto *prev_frame_state = &active_frame_state_;
-    return (KmsState){
-        .used_planes = prev_frame_state->used_planes,
-        .crtc_active_state = prev_frame_state->crtc_active_state,
-    };
-  }
-
+  // Only accessed from main thread.
   DrmDisplayPipeline *pipe_{};
 
-  void CleanupPriorFrameResources();
-
-  KmsState staged_frame_state_;
-  SharedFd last_present_fence_;
-  int frames_staged_{};
-  int frames_tracked_{};
-
+  // The following members must only be updated after a successful commit to
+  // reflect the current state of DRM for the display.
+  KmsState committed_frame_state_;
   DstRectInfo whole_display_rect_{};
 
-  void ThreadFn(const std::shared_ptr<DrmAtomicStateManager> &dasm);
+  void WaitLastFrame();
+  bool SetWriteBackFenceIfNeeded(drmModeAtomicReq *pset,
+                                 AtomicCommitArgs &args);
+  bool SetOutputFence(drmModeAtomicReq *pset, AtomicCommitArgs &args);
+  bool SetActiveIfNeeded(drmModeAtomicReq *pset, AtomicCommitArgs &args);
+  bool SetDisplayModeIfNeeded(drmModeAtomicReq *pset, AtomicCommitArgs &args);
+  bool SetCtmIfNeeded(drmModeAtomicReq *pset, AtomicCommitArgs &args);
+  bool SetColorSpaceIfNeeded(drmModeAtomicReq *pset, AtomicCommitArgs &args);
+  bool SetContentTypeIfNeeded(drmModeAtomicReq *pset, AtomicCommitArgs &args);
+  bool SetHdrMetadataIfNeeded(drmModeAtomicReq *pset, AtomicCommitArgs &args);
+  bool SetMinBpcIfNeeded(drmModeAtomicReq *pset, AtomicCommitArgs &args);
+  bool SetCompositionIfNeeded(drmModeAtomicReq *pset, AtomicCommitArgs &args);
+
+  DrmModeAtomicReqUnique GetAtomicModeReqForArgs(AtomicCommitArgs &args);
+  static void CheckDoubleSettingState(AtomicCommitArgs &args,
+                                      bool crtc_is_active);
+
+  std::thread thread_;
   std::condition_variable cv_;
   std::mutex mutex_;
-  bool exit_thread_{};
+
+  // Accessed from both threads.
+  void CleanupPriorFrameResources() REQUIRES(mutex_);
+
+  bool exit_thread_ GUARDED_BY(mutex_){};
+  // Front of the queue is the objects for the currently presented frame.
+  // Objects for nonblocking frames are pushed to the back of the queue.
+  std::queue<KmsObjects> frame_objects_ GUARDED_BY(mutex_);
+  SharedFd last_present_fence_ GUARDED_BY(mutex_);
+  int frames_staged_ GUARDED_BY(mutex_){};
+  int frames_tracked_ GUARDED_BY(mutex_){};
 };
 
 }  // namespace android

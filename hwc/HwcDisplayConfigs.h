@@ -16,22 +16,32 @@
 
 #pragma once
 
-#include <hardware/hwcomposer2.h>
-
 #include <map>
 
 #include "drm/DrmMode.h"
 
 namespace android {
 
+using ConfigId = int32_t;
+
 class DrmConnector;
 
+/**
+ * Display panel colorspace property values.
+ */
+enum class OutputType : uint32_t {
+  kInvalid,
+  kSystem,
+  kSdr,
+  kHdr10,
+};
+
 struct HwcDisplayConfig {
-  uint32_t id{};
+  ConfigId id{};
   uint32_t group_id{};
   DrmMode mode{};
   bool disabled{};
-  uint32_t output_type{};
+  OutputType output_type{};
 
   bool IsInterlaced() const {
     return (mode.GetRawMode().flags & DRM_MODE_FLAG_INTERLACE) != 0;
@@ -39,16 +49,21 @@ struct HwcDisplayConfig {
 };
 
 struct HwcDisplayConfigs {
-  HWC2::Error Update(DrmConnector &conn);
+  bool Init(DrmConnector &connector);
   void GenFakeMode(uint16_t width, uint16_t height);
 
-  std::map<uint32_t /*config_id*/, struct HwcDisplayConfig> hwc_configs;
+  // Removes problematic configs from groups after they were set.
+  bool SanitizeGroups();
 
-  uint32_t active_config_id = 0;
-  uint32_t preferred_config_id = 0;
+  std::map<ConfigId, struct HwcDisplayConfig> hwc_configs;
 
-  // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
-  static uint32_t last_config_id;
+  ConfigId active_config_id = 0;
+  ConfigId preferred_config_id = 0;
+
+  // Use sequential config IDs throughout the lifetime of the owner display to
+  // prevent race conditions around hotplugs (mode updates). See:
+  // https://source.android.com/docs/core/graphics/hotplug#prevent-race-conditions
+  ConfigId next_config_id = 1;
 
   uint32_t mm_width = 0;
   uint32_t mm_height = 0;

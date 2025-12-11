@@ -46,16 +46,9 @@ class EdidWrapper {
                                   float * /*min_luminance*/) {
     GetSupportedHdrTypes(types);
   };
-  virtual void GetColorModes(std::vector<Colormode> &color_modes) {
+  virtual void GetColorModes(std::vector<ColorMode> &color_modes) {
     color_modes.clear();
   };
-  virtual int GetDpiX() {
-    return -1;
-  }
-  virtual int GetDpiY() {
-    return -1;
-  }
-
   virtual auto GetBoundsMm() -> std::pair<int32_t, int32_t> {
     return {-1, -1};
   }
@@ -79,18 +72,13 @@ class LibdisplayEdidWrapper final : public EdidWrapper {
                           float *max_average_luminance,
                           float *min_luminance) override;
 
-  void GetColorModes(std::vector<Colormode> &color_modes) override;
-
-  auto GetDpiX() -> int override;
-  auto GetDpiY() -> int override;
+  void GetColorModes(std::vector<ColorMode> &color_modes) override;
 
   auto GetBoundsMm() -> std::pair<int32_t, int32_t> override;
 
  private:
   LibdisplayEdidWrapper(di_info *info) : info_(std::move(info)) {
   }
-
-  std::pair<int32_t, int32_t> GetDpi();
 
   di_info *info_{};
 };

@@ -17,6 +17,8 @@
 // NOLINTNEXTLINE(cppcoreguidelines-macro-usage)
 // #define LOG_NDEBUG 0 // Uncomment to see HWC2 API calls in logcat
 
+#include "hardware/hwcomposer2.h"
+#include "system/graphics-base-v1.1.h"
 #define LOG_TAG "drmhwc"
 
 #include <cassert>
@@ -28,10 +30,26 @@
 
 #include "DrmHwcTwo.h"
 #include "backend/Backend.h"
-#include "hwc2_device/HwcLayer.h"
+#include "compositor/DisplayInfo.h"
+#include "hwc/HwcLayer.h"
 #include "utils/log.h"
 
 namespace android {
+
+static int32_t ConfigErrorToHWC2(HwcDisplay::ConfigError result) {
+  switch (result) {
+    case HwcDisplay::ConfigError::kBadConfig:
+      return static_cast<int32_t>(HWC2::Error::BadConfig);
+    case HwcDisplay::ConfigError::kSeamlessNotAllowed:
+      return static_cast<int32_t>(HWC2::Error::SeamlessNotAllowed);
+    case HwcDisplay::ConfigError::kSeamlessNotPossible:
+      return static_cast<int32_t>(HWC2::Error::SeamlessNotPossible);
+    case HwcDisplay::ConfigError::kConfigFailed:
+      return static_cast<int32_t>(HWC2::Error::BadConfig);
+    case HwcDisplay::ConfigError::kNone:
+      return static_cast<int32_t>(HWC2::Error::None);
+  }
+}
 
 /* Converts long __PRETTY_FUNCTION__ result, e.g.:
  * "int32_t android::LayerHook(hwc2_device_t *, hwc2_display_t, hwc2_layer_t,"
@@ -203,7 +221,7 @@ static int32_t DisplayHook(hwc2_device_t *dev, hwc2_display_t display_handle,
         GetFuncName(__PRETTY_FUNCTION__).c_str());
   DrmHwcTwo *hwc = ToDrmHwcTwo(dev);
   const std::unique_lock lock(hwc->GetResMan().GetMainLock());
-  auto *display = hwc->GetDisplay(display_handle);
+  auto *display = hwc->GetDisplay(static_cast<DisplayHandle>(display_handle));
   if (display == nullptr)
     return static_cast<int32_t>(HWC2::Error::BadDisplay);
 
@@ -228,9 +246,9 @@ static void HookDevGetCapabilities(hwc2_device_t * /*dev*/, uint32_t *out_count,
   auto *ihwc = ToDrmHwcTwo(dev); \
   const std::unique_lock lock(ihwc->GetResMan().GetMainLock());
 
-#define GET_DISPLAY(display_id)                  \
-  auto *idisplay = ihwc->GetDisplay(display_id); \
-  if (!idisplay)                                 \
+#define GET_DISPLAY(display_handle)                  \
+  auto *idisplay = ihwc->GetDisplay(display_handle); \
+  if (!idisplay)                                     \
     return static_cast<int32_t>(HWC2::Error::BadDisplay);
 
 #define GET_LAYER(layer_id)                     \
@@ -268,6 +286,57 @@ static BufferSampleRange Hwc2ToSampleRange(int32_t dataspace) {
   }
 }
 
+/* Device functions */
+static int32_t Dump(hwc2_device_t *device, uint32_t *out_size,
+                    char *out_buffer) {
+  DrmHwcTwo *hwc = ToDrmHwcTwo(device);
+  if (out_size == nullptr) {
+    return static_cast<int32_t>(HWC2::Error::BadParameter);
+  }
+
+  if (out_buffer != nullptr) {
+    const std::string &last_dump = hwc->GetLastStateDump();
+    auto copied_bytes = last_dump.copy(out_buffer, *out_size);
+    *out_size = copied_bytes;
+    return 0;
+  }
+
+  const std::string &new_dump = hwc->RefreshStateDump();
+  *out_size = static_cast<uint32_t>(new_dump.size());
+  return 0;
+}
+
+static int32_t CreateVirtualDisplay(hwc2_device_t *device, uint32_t width,
+                                    uint32_t height, int32_t * /*format*/,
+                                    hwc2_display_t *out_display_handle) {
+  ALOGV("CreateVirtualDisplay");
+  LOCK_COMPOSER(device);
+  auto display_handle = ihwc->CreateVirtualDisplay(width, height);
+  if (!display_handle) {
+    return static_cast<int32_t>(HWC2::Error::Unsupported);
+  }
+
+  *out_display_handle = display_handle.value();
+  return 0;
+}
+
+static int32_t DestroyVirtualDisplay(hwc2_device_t *device,
+                                     hwc2_display_t display) {
+  ALOGV("DestroyVirtualDisplay");
+  LOCK_COMPOSER(device);
+  GET_DISPLAY(display);
+  if (!ihwc->DestroyVirtualDisplay(static_cast<DisplayHandle>(display))) {
+    return static_cast<int32_t>(HWC2::Error::BadParameter);
+  }
+  return 0;
+}
+
+static int32_t GetMaxVirtualDisplayCount(hwc2_device_t *device) {
+  ALOGV("GetMaxVirtualDisplayCount");
+  LOCK_COMPOSER(device);
+  return static_cast<int32_t>(ihwc->GetMaxVirtualDisplayCount());
+}
+
 /* Display functions */
 static int32_t CreateLayer(hwc2_device_t *device, hwc2_display_t display,
                            hwc2_layer_t *out_layer) {
@@ -300,6 +369,21 @@ static int32_t DestroyLayer(hwc2_device_t *device, hwc2_display_t display,
   return 0;
 }
 
+static int32_t GetActiveConfig(hwc2_device_t *device, hwc2_display_t display,
+                               hwc2_config_t *config) {
+  ALOGV("GetActiveConfig");
+  LOCK_COMPOSER(device);
+  GET_DISPLAY(display);
+
+  // If a config has been queued, it is considered the "active" config.
+  const HwcDisplayConfig *hwc_config = idisplay->GetLastRequestedConfig();
+  if (hwc_config == nullptr)
+    return static_cast<int32_t>(HWC2::Error::BadConfig);
+
+  *config = hwc_config->id;
+  return 0;
+}
+
 static int32_t GetDisplayRequests(hwc2_device_t * /*device*/,
                                   hwc2_display_t /*display*/,
                                   int32_t * /* out_display_requests */,
@@ -309,6 +393,24 @@ static int32_t GetDisplayRequests(hwc2_device_t * /*device*/,
   ALOGV("GetDisplayRequests");
 
   *out_num_elements = 0;
+  return 0;
+}
+
+static int32_t GetDisplayType(hwc2_device_t *device, hwc2_display_t display,
+                              int32_t *out_type) {
+  ALOGV("GetDisplayType");
+  LOCK_COMPOSER(device);
+  GET_DISPLAY(display);
+
+  switch (idisplay->GetDisplayType()) {
+    case HwcDisplay::DisplayType::kVirtual:
+      *out_type = static_cast<int32_t>(HWC2::DisplayType::Virtual);
+      break;
+    case HwcDisplay::DisplayType::kInternal:
+    case HwcDisplay::DisplayType::kExternal:
+      *out_type = static_cast<int32_t>(HWC2::DisplayType::Physical);
+      break;
+  }
   return 0;
 }
 
@@ -370,6 +472,190 @@ static int32_t SetClientTarget(hwc2_device_t *device, hwc2_display_t display,
   return 0;
 }
 
+static int32_t GetColorModes(hwc2_device_t *device, hwc2_display_t display,
+                             uint32_t *num_modes, int32_t *out_modes) {
+  ALOGV("GetColorModes");
+  LOCK_COMPOSER(device);
+  GET_DISPLAY(display);
+
+  const std::vector<ColorMode> modes = idisplay->GetColorModes();
+  if (modes.empty())
+    return static_cast<int32_t>(HWC2::Error::BadConfig);
+
+  for (uint32_t i = 0; i < modes.size(); ++i) {
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic):
+    out_modes[i] = static_cast<int32_t>(modes[i]);
+  }
+  *num_modes = modes.size();
+  return 0;
+}
+
+static int32_t GetDisplayAttribute(hwc2_device_t *device,
+                                   hwc2_display_t display, hwc2_config_t config,
+                                   int32_t attribute, int32_t *value) {
+  ALOGV("GetDisplayAttribute");
+  LOCK_COMPOSER(device);
+  GET_DISPLAY(display);
+
+  const auto *hwc_config = idisplay->GetConfig(static_cast<ConfigId>(config));
+
+  if (hwc_config == nullptr) {
+    ALOGE("Could not find mode #%d", config);
+    return static_cast<int32_t>(HWC2::Error::BadConfig);
+  }
+
+  int mm_width = -1;
+  int mm_height = -1;
+  std::tie(mm_width, mm_height) = idisplay->GetDisplayBoundsMm();
+  std::optional<std::pair<float, float>> dpi_inches = {};
+
+  if (mm_width > 0) {
+    static const float kMmPerInch = 25.4;
+    float dpi_x = float(hwc_config->mode.GetRawMode().hdisplay) * kMmPerInch /
+                  float(mm_width);
+    float dpi_y = mm_height <= 0
+                      ? dpi_x
+                      : float(hwc_config->mode.GetRawMode().vdisplay) *
+                            kMmPerInch / float(mm_height);
+    dpi_inches = std::make_pair(dpi_x, dpi_y);
+  }
+
+  static const int kLegacyDpiUnit = 1000;
+  switch (static_cast<HWC2::Attribute>(attribute)) {
+    case HWC2::Attribute::Width:
+      *value = static_cast<int>(hwc_config->mode.GetRawMode().hdisplay);
+      break;
+    case HWC2::Attribute::Height:
+      *value = static_cast<int>(hwc_config->mode.GetRawMode().vdisplay);
+      break;
+    case HWC2::Attribute::VsyncPeriod:
+      // in nanoseconds
+      *value = hwc_config->mode.GetVSyncPeriodNs();
+      break;
+    case HWC2::Attribute::DpiY:
+      *value = dpi_inches
+                   ? static_cast<int>(dpi_inches->second * kLegacyDpiUnit)
+                   : -1;
+      break;
+    case HWC2::Attribute::DpiX:
+      *value = dpi_inches ? static_cast<int>(dpi_inches->first * kLegacyDpiUnit)
+                          : -1;
+      break;
+    case HWC2::Attribute::ConfigGroup:
+      /* Dispite ConfigGroup is a part of HWC2.4 API, framework
+       * able to request it even if service @2.1 is used */
+      *value = int(hwc_config->group_id);
+      break;
+    default:
+      *value = -1;
+      return static_cast<int32_t>(HWC2::Error::BadConfig);
+  }
+  return 0;
+}
+
+static int32_t GetDisplayConfigs(hwc2_device_t *device, hwc2_display_t display,
+                                 uint32_t *num_configs,
+                                 hwc2_config_t *configs) {
+  ALOGV("GetDisplayConfigs");
+  LOCK_COMPOSER(device);
+  GET_DISPLAY(display);
+
+  uint32_t idx = 0;
+  for (const auto &hwc_config : idisplay->GetDisplayConfigs()) {
+    if (hwc_config.disabled) {
+      continue;
+    }
+
+    if (configs != nullptr) {
+      if (idx >= *num_configs) {
+        break;
+      }
+      // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic):
+      configs[idx] = hwc_config.id;
+    }
+
+    idx++;
+  }
+  *num_configs = idx;
+  return 0;
+}
+
+static int32_t GetDisplayName(hwc2_device_t *device, hwc2_display_t display,
+                              uint32_t *size, char *name) {
+  ALOGV("GetDisplayName");
+  LOCK_COMPOSER(device);
+  GET_DISPLAY(display);
+
+  std::string name_str = idisplay->GetDisplayName();
+
+  auto length = name_str.length();
+  if (name == nullptr) {
+    *size = length;
+    return 0;
+  }
+
+  *size = std::min<uint32_t>(static_cast<uint32_t>(length - 1), *size);
+  strncpy(name, name_str.c_str(), *size);
+  return 0;
+}
+
+static int32_t SetColorMode(hwc2_device_t *device, hwc2_display_t display, int32_t mode) {
+  ALOGV("SetColorMode");
+  if (mode < HAL_COLOR_MODE_NATIVE || mode > HAL_COLOR_MODE_DISPLAY_BT2020)
+    return static_cast<int32_t>(HWC2::Error::BadParameter);
+
+  // HDR color modes should be requested during modeset
+  if (mode == HAL_COLOR_MODE_DISPLAY_BT2020 ||
+      mode == HAL_COLOR_MODE_ADOBE_RGB ||
+      mode == HAL_COLOR_MODE_BT2020 ||
+      mode == HAL_COLOR_MODE_BT2100_PQ ||
+      mode == HAL_COLOR_MODE_BT2100_HLG) {
+    return static_cast<int32_t>(HWC2::Error::Unsupported);
+  }
+
+  LOCK_COMPOSER(device);
+  GET_DISPLAY(display);
+
+  // Values for color modes match across HWC versions, so static cast is safe:
+  // https://android.googlesource.com/platform/hardware/interfaces/+/refs/heads/main/graphics/composer/aidl/android/hardware/graphics/composer3/ColorMode.aidl
+  // https://cs.android.com/android/platform/superproject/main/+/main:system/core/libsystem/include/system/graphics-base-v1.0.h;drc=7d940ae4afa450696afa25e07982f3a95e17e9b2;l=118
+  // https://cs.android.com/android/platform/superproject/main/+/main:system/core/libsystem/include/system/graphics-base-v1.1.h;drc=7d940ae4afa450696afa25e07982f3a95e17e9b2;l=35
+  idisplay->SetColorMode(static_cast<ColorMode>(mode));
+  return 0;
+}
+
+static int32_t SetColorTransform(hwc2_device_t *device, hwc2_display_t display,
+                                 const float *matrix, int32_t hint) {
+  ALOGV("SetColorTransform");
+  if (hint < HAL_COLOR_TRANSFORM_IDENTITY ||
+      hint > HAL_COLOR_TRANSFORM_CORRECT_TRITANOPIA) {
+    return static_cast<int32_t>(HWC2::Error::BadParameter);
+  }
+
+  if (hint != HAL_COLOR_TRANSFORM_ARBITRARY_MATRIX &&
+      hint != HAL_COLOR_TRANSFORM_IDENTITY) {
+    return static_cast<int32_t>(HWC2::Error::Unsupported);
+  }
+
+  LOCK_COMPOSER(device);
+  GET_DISPLAY(display);
+
+  if (matrix == nullptr) {
+    if (hint == HAL_COLOR_TRANSFORM_IDENTITY) {
+      idisplay->SetColorTransformMatrix(kIdentityMatrix);
+      return 0;
+    }
+
+    return static_cast<int32_t>(HWC2::Error::BadParameter);
+  }
+
+  std::array<float, kColorMatrixSize> aidl_matrix = kIdentityMatrix;
+  memcpy(aidl_matrix.data(), matrix, aidl_matrix.size() * sizeof(float));
+  idisplay->SetColorTransformMatrix(aidl_matrix);
+
+  return 0;
+}
+
 static int32_t SetOutputBuffer(hwc2_device_t *device, hwc2_display_t display,
                                buffer_handle_t buffer, int32_t release_fence) {
   ALOGV("SetOutputBuffer");
@@ -414,6 +700,40 @@ static int32_t AcceptDisplayChanges(hwc2_device_t *device,
   return 0;
 }
 
+static int32_t GetHdrCapabilities(hwc2_device_t *device, hwc2_display_t display,
+                                  uint32_t *num_types, int32_t *types,
+                                  float *max_luminance,
+                                  float *max_average_luminance,
+                                  float *min_luminance) {
+  ALOGV("GetHdrCapabilities");
+  LOCK_COMPOSER(device);
+  GET_DISPLAY(display);
+
+  std::vector<ui::Hdr> temp_types;
+  idisplay->GetHdrCapabilities(&temp_types, max_luminance,
+                               max_average_luminance, min_luminance);
+  uint32_t i = 0;
+  for (auto &t : temp_types) {
+    switch (t) {
+      case ui::Hdr::HDR10:
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic):
+        types[i++] = HAL_HDR_HDR10;
+        break;
+      case ui::Hdr::HLG:
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic):
+        types[i++] = HAL_HDR_HLG;
+        break;
+      default:
+        // Ignore any other HDR types
+        break;
+    }
+  }
+
+  *num_types = i;
+
+  return 0;
+}
+
 static int32_t GetReleaseFences(hwc2_device_t *device, hwc2_display_t display,
                                 uint32_t *out_num_elements,
                                 hwc2_layer_t *out_layers, int32_t *out_fences) {
@@ -439,6 +759,43 @@ static int32_t GetReleaseFences(hwc2_device_t *device, hwc2_display_t display,
   *out_num_elements = hwc2display->release_fences.size();
   hwc2display->release_fences.clear();
 
+  return static_cast<int32_t>(HWC2::Error::None);
+}
+
+static int32_t SetPowerMode(hwc2_device_t *device, hwc2_display_t display,
+                            int32_t mode) {
+  ALOGV("SetPowerMode");
+  LOCK_COMPOSER(device);
+  GET_DISPLAY(display);
+
+  switch (mode) {
+    // Supported modes.
+    case static_cast<int32_t>(HWC2::PowerMode::Off):
+    case static_cast<int32_t>(HWC2::PowerMode::On):
+      break;
+    // Unsupported modes.
+    case static_cast<int32_t>(HWC2::PowerMode::Doze):
+    case static_cast<int32_t>(HWC2::PowerMode::DozeSuspend):
+      return static_cast<int32_t>(HWC2::Error::Unsupported);
+    // Bad parameter.
+    default:
+      ALOGE("Incorrect power mode value (%d)\n", mode);
+      return static_cast<int32_t>(HWC2::Error::BadParameter);
+  }
+
+  if (!idisplay->SetDisplayEnabled(mode ==
+                                   static_cast<int32_t>(HWC2::PowerMode::On))) {
+    return static_cast<int32_t>(HWC2::Error::BadParameter);
+  }
+  return static_cast<int32_t>(HWC2::Error::None);
+}
+
+static int32_t SetVsyncEnabled(hwc2_device_t *device, hwc2_display_t display,
+                               int32_t enabled) {
+  ALOGV("SetVsyncEnabled");
+  LOCK_COMPOSER(device);
+  GET_DISPLAY(display);
+  idisplay->SetVsyncCallbacksEnabled(HWC2_VSYNC_ENABLE == enabled);
   return static_cast<int32_t>(HWC2::Error::None);
 }
 
@@ -512,7 +869,25 @@ static int32_t PresentDisplay(hwc2_device_t *device, hwc2_display_t display,
   return 0;
 }
 
-#if __ANDROID_API__ >= 28
+static int32_t SetActiveConfig(hwc2_device_t *device, hwc2_display_t display,
+                               hwc2_config_t config) {
+  ALOGV("SetActiveConfig");
+  LOCK_COMPOSER(device);
+  GET_DISPLAY(display);
+
+  QueuedConfigTiming out_timing{};
+  const auto config_id = static_cast<ConfigId>(config);
+  auto error = idisplay->QueueConfig(config_id,
+                                     ResourceManager::GetTimeMonotonicNs(),
+                                     &out_timing);
+
+  if (error == HwcDisplay::kSeamlessNotAllowed) {
+    // Fallback to a full blocking modeset.
+    error = idisplay->SetConfig(config_id);
+  }
+
+  return ConfigErrorToHWC2(error);
+}
 
 static int32_t GetDisplayBrightnessSupport(hwc2_device_t * /*device*/,
                                            hwc2_display_t /*display*/,
@@ -529,9 +904,159 @@ static int32_t SetDisplayBrightness(hwc2_device_t * /*device*/,
   return static_cast<int32_t>(HWC2::Error::Unsupported);
 }
 
-#endif
+static int32_t GetRenderIntents(hwc2_device_t * /*device*/,
+                                hwc2_display_t /*display*/, int32_t mode,
+                                uint32_t *num_intents, int32_t *intents) {
+  ALOGV("GetRenderIntents");
 
-#if __ANDROID_API__ >= 29
+  if (mode < HAL_COLOR_MODE_NATIVE || mode > HAL_COLOR_MODE_DISPLAY_BT2020)
+    return static_cast<int32_t>(HWC2::Error::BadParameter);
+
+  // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic):
+  intents[0] = static_cast<int32_t>(HAL_RENDER_INTENT_COLORIMETRIC);
+  *num_intents = 1;
+
+  return 0;
+}
+
+static int32_t SetColorModeWithRenderIntent(hwc2_device_t *device,
+                                            hwc2_display_t display,
+                                            int32_t mode, int32_t intent) {
+  ALOGV("SetColorModeWithRenderIntent");
+  if (mode < HAL_RENDER_INTENT_COLORIMETRIC ||
+      mode > HAL_RENDER_INTENT_TONE_MAP_ENHANCE) {
+    return static_cast<int32_t>(HWC2::Error::BadParameter);
+  }
+
+  if (intent != HAL_RENDER_INTENT_COLORIMETRIC)
+    return static_cast<int32_t>(HWC2::Error::Unsupported);
+
+  return SetColorMode(device, display, mode);
+}
+
+static int32_t GetDisplayIdentificationData(hwc2_device_t *device,
+                                            hwc2_display_t display,
+                                            uint8_t *out_port,
+                                            uint32_t *out_data_size,
+                                            uint8_t *out_data) {
+  ALOGV("GetDisplayIdentificationData");
+  LOCK_COMPOSER(device);
+  GET_DISPLAY(display);
+
+  auto edid = idisplay->GetRawEdid();
+  if (edid.empty()) {
+    return static_cast<int32_t>(HWC2::Error::Unsupported);
+  }
+
+  *out_port = idisplay->GetPort();
+
+  if (out_data != nullptr) {
+    *out_data_size = std::min(*out_data_size,
+                              static_cast<uint32_t>(edid.size()));
+    memcpy(out_data, edid.data(), *out_data_size);
+  } else {
+    *out_data_size = edid.size();
+  }
+
+  return static_cast<int32_t>(HWC2::Error::None);
+}
+
+static int32_t GetDisplayCapabilities(hwc2_device_t *device,
+                                      hwc2_display_t display,
+                                      uint32_t *out_num_capabilities,
+                                      uint32_t *out_capabilities) {
+  ALOGV("GetDisplayCapabilities");
+  LOCK_COMPOSER(device);
+  GET_DISPLAY(display);
+
+  if (out_num_capabilities == nullptr) {
+    return static_cast<int32_t>(HWC2::Error::BadParameter);
+  }
+
+  if (ihwc->GetResMan().GetCtmHandling() == CtmHandling::kDrmOrIgnore) {
+    if (out_capabilities != nullptr && *out_num_capabilities > 0) {
+      // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic):
+      out_capabilities[0] = HWC2_DISPLAY_CAPABILITY_SKIP_CLIENT_COLOR_TRANSFORM;
+    }
+    *out_num_capabilities = 1;
+  }
+
+  return static_cast<int32_t>(HWC2::Error::None);
+}
+
+static int32_t GetDisplayConnectionType(hwc2_device_t *device,
+                                        hwc2_display_t display,
+                                        int32_t *out_connection_type) {
+  ALOGV("GetDisplayConnectionType");
+  LOCK_COMPOSER(device);
+  GET_DISPLAY(display);
+
+  switch (idisplay->GetDisplayType()) {
+    case HwcDisplay::DisplayType::kVirtual:
+      return static_cast<int32_t>(HWC2::Error::BadDisplay);
+    case HwcDisplay::DisplayType::kInternal:
+      *out_connection_type = static_cast<int32_t>(
+          HWC2::DisplayConnectionType::Internal);
+      break;
+    case HwcDisplay::DisplayType::kExternal:
+      *out_connection_type = static_cast<int32_t>(
+          HWC2::DisplayConnectionType::External);
+      break;
+  }
+  return 0;
+}
+
+static int32_t GetDisplayVsyncPeriod(hwc2_device_t *device,
+                                     hwc2_display_t display,
+                                     hwc2_vsync_period_t *out_vsync_period) {
+  LOCK_COMPOSER(device);
+  GET_DISPLAY(display);
+
+  const HwcDisplayConfig *config = idisplay->GetCurrentConfig();
+  if (config == nullptr) {
+    return static_cast<int32_t>(HWC2::Error::BadConfig);
+  }
+
+  *out_vsync_period = config->mode.GetVSyncPeriodNs();
+  return static_cast<int32_t>(HWC2::Error::None);
+}
+
+static int32_t SetActiveConfigWithConstraints(
+    hwc2_device_t *device, hwc2_display_t display, hwc2_config_t config,
+    hwc_vsync_period_change_constraints_t *vsync_period_change_constraints,
+    hwc_vsync_period_change_timeline_t *out_timeline) {
+  LOCK_COMPOSER(device);
+  GET_DISPLAY(display);
+
+  if (vsync_period_change_constraints == nullptr || out_timeline == nullptr) {
+    return static_cast<int32_t>(HWC2::Error::BadParameter);
+  }
+
+  if (vsync_period_change_constraints->seamlessRequired != 0) {
+    return static_cast<int32_t>(HWC2::Error::SeamlessNotAllowed);
+  }
+
+  const auto config_id = static_cast<ConfigId>(config);
+  QueuedConfigTiming out_timing{};
+  auto error = idisplay->QueueConfig(config_id,
+                                     vsync_period_change_constraints
+                                         ->desiredTimeNanos,
+                                     &out_timing);
+
+  if (error == HwcDisplay::kNone) {
+    out_timeline->newVsyncAppliedTimeNanos = out_timing.new_vsync_time_ns;
+    out_timeline->refreshTimeNanos = out_timing.refresh_time_ns;
+    out_timeline->refreshRequired = 1U;
+  } else if (error == HwcDisplay::kSeamlessNotAllowed) {
+    error = idisplay->SetConfig(config_id);
+    out_timeline
+        ->newVsyncAppliedTimeNanos = ResourceManager::GetTimeMonotonicNs();
+    out_timeline->refreshRequired = 0U;
+  }
+
+  return ConfigErrorToHWC2(error);
+}
+
 static int32_t SetAutoLowLatencyMode(hwc2_device_t * /*device*/,
                                      hwc2_display_t /*display*/, bool /*on*/) {
   ALOGV("SetAutoLowLatencyMode");
@@ -546,7 +1071,22 @@ static int32_t GetSupportedContentTypes(
   *out_num_supported_content_types = 0;
   return static_cast<int32_t>(HWC2::Error::None);
 }
-#endif
+
+static int32_t SetContentType(hwc2_device_t *device, hwc2_display_t display,
+                              int32_t content_type) {
+  ALOGV("SetContentType");
+  LOCK_COMPOSER(device);
+  GET_DISPLAY(display);
+
+  if (content_type < HWC2_CONTENT_TYPE_NONE ||
+      content_type > HWC2_CONTENT_TYPE_GAME) {
+    return static_cast<int32_t>(HWC2::Error::BadParameter);
+  }
+
+  idisplay->SetContentType(static_cast<ContentType>(content_type));
+
+  return static_cast<int32_t>(HWC2::Error::None);
+}
 
 /* Layer functions */
 
@@ -648,7 +1188,23 @@ static int32_t SetLayerCompositionType(hwc2_device_t *device,
   GET_LAYER(layer);
 
   HwcLayer::LayerProperties layer_properties;
-  layer_properties.composition_type = static_cast<HWC2::Composition>(type);
+  switch (static_cast<HWC2::Composition>(type)) {
+    case HWC2::Composition::Client:
+      layer_properties.composition_type = CompositionType::kClient;
+      break;
+    case HWC2::Composition::Device:
+      layer_properties.composition_type = CompositionType::kDevice;
+      break;
+    case HWC2::Composition::SolidColor:
+      layer_properties.composition_type = CompositionType::kSolidColor;
+      break;
+    case HWC2::Composition::Cursor:
+      layer_properties.composition_type = CompositionType::kCursor;
+      break;
+    default:
+      ALOGE("Unsupported composition type t=%d", type);
+      break;
+  }
   ilayer->SetLayerProperties(layer_properties);
 
   return 0;
@@ -663,11 +1219,10 @@ static int32_t SetLayerDisplayFrame(hwc2_device_t *device,
   GET_LAYER(layer);
 
   HwcLayer::LayerProperties layer_properties;
-  layer_properties.display_frame = {
-      .i_rect = DstRectInfo::IRect{.left = frame.left,
-                                   .top = frame.top,
-                                   .right = frame.right,
-                                   .bottom = frame.bottom}};
+  layer_properties.display_frame = {.i_rect = IRect{.left = frame.left,
+                                                    .top = frame.top,
+                                                    .right = frame.right,
+                                                    .bottom = frame.bottom}};
   ilayer->SetLayerProperties(layer_properties);
 
   return 0;
@@ -713,11 +1268,26 @@ static int32_t SetLayerSourceCrop(hwc2_device_t *device, hwc2_display_t display,
   return 0;
 }
 
-static int32_t SetLayerSurfaceDamage(hwc2_device_t * /*device*/,
-                                     hwc2_display_t /*display*/,
-                                     hwc2_layer_t /*layer*/,
-                                     hwc_region_t /*damage*/) {
+static int32_t SetLayerSurfaceDamage(hwc2_device_t *device,
+                                     hwc2_display_t display, hwc2_layer_t layer,
+                                     hwc_region_t damage) {
   ALOGV("SetLayerSurfaceDamage");
+  LOCK_COMPOSER(device);
+  GET_DISPLAY(display);
+  GET_LAYER(layer);
+
+  HwcLayer::LayerProperties layer_properties{.damage = DamageInfo{}};
+  for (size_t i = 0; i < damage.numRects; ++i) {
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
+    const auto rect = damage.rects[i];
+    layer_properties.damage->dmg_rects.emplace_back(
+        IRect{.left = rect.left,
+              .top = rect.top,
+              .right = rect.right,
+              .bottom = rect.bottom});
+  }
+  ilayer->SetLayerProperties(layer_properties);
+
   return 0;
 }
 
@@ -770,22 +1340,13 @@ static hwc2_function_pointer_t HookDevGetFunction(struct hwc2_device * /*dev*/,
   switch (func) {
     // Device functions
     case HWC2::FunctionDescriptor::CreateVirtualDisplay:
-      return ToHook<HWC2_PFN_CREATE_VIRTUAL_DISPLAY>(
-          DeviceHook<int32_t, decltype(&DrmHwcTwo::CreateVirtualDisplay),
-                     &DrmHwcTwo::CreateVirtualDisplay, uint32_t, uint32_t,
-                     int32_t *, hwc2_display_t *>);
+      return (hwc2_function_pointer_t)CreateVirtualDisplay;
     case HWC2::FunctionDescriptor::DestroyVirtualDisplay:
-      return ToHook<HWC2_PFN_DESTROY_VIRTUAL_DISPLAY>(
-          DeviceHook<int32_t, decltype(&DrmHwcTwo::DestroyVirtualDisplay),
-                     &DrmHwcTwo::DestroyVirtualDisplay, hwc2_display_t>);
+      return (hwc2_function_pointer_t)DestroyVirtualDisplay;
     case HWC2::FunctionDescriptor::Dump:
-      return ToHook<HWC2_PFN_DUMP>(
-          DeviceHook<void, decltype(&DrmHwcTwo::Dump), &DrmHwcTwo::Dump,
-                     uint32_t *, char *>);
+      return (hwc2_function_pointer_t)Dump;
     case HWC2::FunctionDescriptor::GetMaxVirtualDisplayCount:
-      return ToHook<HWC2_PFN_GET_MAX_VIRTUAL_DISPLAY_COUNT>(
-          DeviceHook<uint32_t, decltype(&DrmHwcTwo::GetMaxVirtualDisplayCount),
-                     &DrmHwcTwo::GetMaxVirtualDisplayCount>);
+      return (hwc2_function_pointer_t)GetMaxVirtualDisplayCount;
     case HWC2::FunctionDescriptor::RegisterCallback:
       return ToHook<HWC2_PFN_REGISTER_CALLBACK>(
           DeviceHook<int32_t, decltype(&DrmHwcTwo::RegisterCallback),
@@ -800,126 +1361,72 @@ static hwc2_function_pointer_t HookDevGetFunction(struct hwc2_device * /*dev*/,
     case HWC2::FunctionDescriptor::DestroyLayer:
       return (hwc2_function_pointer_t)DestroyLayer;
     case HWC2::FunctionDescriptor::GetActiveConfig:
-      return ToHook<HWC2_PFN_GET_ACTIVE_CONFIG>(
-          DisplayHook<decltype(&HwcDisplay::GetActiveConfig),
-                      &HwcDisplay::GetActiveConfig, hwc2_config_t *>);
+      return (hwc2_function_pointer_t)GetActiveConfig;
     case HWC2::FunctionDescriptor::GetChangedCompositionTypes:
       return (hwc2_function_pointer_t)GetChangedCompositionTypes;
     case HWC2::FunctionDescriptor::GetClientTargetSupport:
       return (hwc2_function_pointer_t)GetClientTargetSupport;
     case HWC2::FunctionDescriptor::GetColorModes:
-      return ToHook<HWC2_PFN_GET_COLOR_MODES>(
-          DisplayHook<decltype(&HwcDisplay::GetColorModes),
-                      &HwcDisplay::GetColorModes, uint32_t *, int32_t *>);
+      return (hwc2_function_pointer_t)GetColorModes;
     case HWC2::FunctionDescriptor::GetDisplayAttribute:
-      return ToHook<HWC2_PFN_GET_DISPLAY_ATTRIBUTE>(
-          DisplayHook<decltype(&HwcDisplay::GetDisplayAttribute),
-                      &HwcDisplay::GetDisplayAttribute, hwc2_config_t, int32_t,
-                      int32_t *>);
+      return (hwc2_function_pointer_t)GetDisplayAttribute;
     case HWC2::FunctionDescriptor::GetDisplayConfigs:
-      return ToHook<HWC2_PFN_GET_DISPLAY_CONFIGS>(
-          DisplayHook<decltype(&HwcDisplay::LegacyGetDisplayConfigs),
-                      &HwcDisplay::LegacyGetDisplayConfigs, uint32_t *,
-                      hwc2_config_t *>);
+      return (hwc2_function_pointer_t)GetDisplayConfigs;
     case HWC2::FunctionDescriptor::GetDisplayName:
-      return ToHook<HWC2_PFN_GET_DISPLAY_NAME>(
-          DisplayHook<decltype(&HwcDisplay::GetDisplayName),
-                      &HwcDisplay::GetDisplayName, uint32_t *, char *>);
+      return (hwc2_function_pointer_t)GetDisplayName;
     case HWC2::FunctionDescriptor::GetDisplayRequests:
       return (hwc2_function_pointer_t)GetDisplayRequests;
     case HWC2::FunctionDescriptor::GetDisplayType:
-      return ToHook<HWC2_PFN_GET_DISPLAY_TYPE>(
-          DisplayHook<decltype(&HwcDisplay::GetDisplayType),
-                      &HwcDisplay::GetDisplayType, int32_t *>);
+      return (hwc2_function_pointer_t)GetDisplayType;
     case HWC2::FunctionDescriptor::GetDozeSupport:
       return (hwc2_function_pointer_t)GetDozeSupport;
     case HWC2::FunctionDescriptor::GetHdrCapabilities:
-      return ToHook<HWC2_PFN_GET_HDR_CAPABILITIES>(
-          DisplayHook<decltype(&HwcDisplay::GetHdrCapabilities),
-                      &HwcDisplay::GetHdrCapabilities, uint32_t *, int32_t *,
-                      float *, float *, float *>);
+      return (hwc2_function_pointer_t)GetHdrCapabilities;
     case HWC2::FunctionDescriptor::GetReleaseFences:
       return (hwc2_function_pointer_t)GetReleaseFences;
     case HWC2::FunctionDescriptor::PresentDisplay:
       return (hwc2_function_pointer_t)PresentDisplay;
     case HWC2::FunctionDescriptor::SetActiveConfig:
-      return ToHook<HWC2_PFN_SET_ACTIVE_CONFIG>(
-          DisplayHook<decltype(&HwcDisplay::SetActiveConfig),
-                      &HwcDisplay::SetActiveConfig, hwc2_config_t>);
+      return (hwc2_function_pointer_t)SetActiveConfig;
     case HWC2::FunctionDescriptor::SetClientTarget:
       return (hwc2_function_pointer_t)SetClientTarget;
     case HWC2::FunctionDescriptor::SetColorMode:
-      return ToHook<HWC2_PFN_SET_COLOR_MODE>(
-          DisplayHook<decltype(&HwcDisplay::SetColorMode),
-                      &HwcDisplay::SetColorMode, int32_t>);
+      return (hwc2_function_pointer_t)SetColorMode;
     case HWC2::FunctionDescriptor::SetColorTransform:
-      return ToHook<HWC2_PFN_SET_COLOR_TRANSFORM>(
-          DisplayHook<decltype(&HwcDisplay::SetColorTransform),
-                      &HwcDisplay::SetColorTransform, const float *, int32_t>);
+      return (hwc2_function_pointer_t)SetColorTransform;
     case HWC2::FunctionDescriptor::SetOutputBuffer:
       return (hwc2_function_pointer_t)SetOutputBuffer;
     case HWC2::FunctionDescriptor::SetPowerMode:
-      return ToHook<HWC2_PFN_SET_POWER_MODE>(
-          DisplayHook<decltype(&HwcDisplay::SetPowerMode),
-                      &HwcDisplay::SetPowerMode, int32_t>);
+      return (hwc2_function_pointer_t)SetPowerMode;
     case HWC2::FunctionDescriptor::SetVsyncEnabled:
-      return ToHook<HWC2_PFN_SET_VSYNC_ENABLED>(
-          DisplayHook<decltype(&HwcDisplay::SetVsyncEnabled),
-                      &HwcDisplay::SetVsyncEnabled, int32_t>);
+      return (hwc2_function_pointer_t)SetVsyncEnabled;
     case HWC2::FunctionDescriptor::ValidateDisplay:
       return (hwc2_function_pointer_t)ValidateDisplay;
-#if __ANDROID_API__ > 27
     case HWC2::FunctionDescriptor::GetRenderIntents:
-      return ToHook<HWC2_PFN_GET_RENDER_INTENTS>(
-          DisplayHook<decltype(&HwcDisplay::GetRenderIntents),
-                      &HwcDisplay::GetRenderIntents, int32_t, uint32_t *,
-                      int32_t *>);
+      return (hwc2_function_pointer_t)GetRenderIntents;
     case HWC2::FunctionDescriptor::SetColorModeWithRenderIntent:
-      return ToHook<HWC2_PFN_SET_COLOR_MODE_WITH_RENDER_INTENT>(
-          DisplayHook<decltype(&HwcDisplay::SetColorModeWithIntent),
-                      &HwcDisplay::SetColorModeWithIntent, int32_t, int32_t>);
-#endif
-#if __ANDROID_API__ > 28
+      return (hwc2_function_pointer_t)SetColorModeWithRenderIntent;
     case HWC2::FunctionDescriptor::GetDisplayIdentificationData:
-      return ToHook<HWC2_PFN_GET_DISPLAY_IDENTIFICATION_DATA>(
-          DisplayHook<decltype(&HwcDisplay::GetDisplayIdentificationData),
-                      &HwcDisplay::GetDisplayIdentificationData, uint8_t *,
-                      uint32_t *, uint8_t *>);
+      return (hwc2_function_pointer_t)GetDisplayIdentificationData;
     case HWC2::FunctionDescriptor::GetDisplayCapabilities:
-      return ToHook<HWC2_PFN_GET_DISPLAY_CAPABILITIES>(
-          DisplayHook<decltype(&HwcDisplay::GetDisplayCapabilities),
-                      &HwcDisplay::GetDisplayCapabilities, uint32_t *,
-                      uint32_t *>);
+      return (hwc2_function_pointer_t)GetDisplayCapabilities;
     case HWC2::FunctionDescriptor::GetDisplayBrightnessSupport:
       return (hwc2_function_pointer_t)GetDisplayBrightnessSupport;
     case HWC2::FunctionDescriptor::SetDisplayBrightness:
       return (hwc2_function_pointer_t)SetDisplayBrightness;
-#endif /* __ANDROID_API__ > 28 */
-#if __ANDROID_API__ > 29
     case HWC2::FunctionDescriptor::GetDisplayConnectionType:
-      return ToHook<HWC2_PFN_GET_DISPLAY_CONNECTION_TYPE>(
-          DisplayHook<decltype(&HwcDisplay::GetDisplayConnectionType),
-                      &HwcDisplay::GetDisplayConnectionType, uint32_t *>);
+      return (hwc2_function_pointer_t)GetDisplayConnectionType;
     case HWC2::FunctionDescriptor::GetDisplayVsyncPeriod:
-      return ToHook<HWC2_PFN_GET_DISPLAY_VSYNC_PERIOD>(
-          DisplayHook<decltype(&HwcDisplay::GetDisplayVsyncPeriod),
-                      &HwcDisplay::GetDisplayVsyncPeriod,
-                      hwc2_vsync_period_t *>);
+      return (hwc2_function_pointer_t)GetDisplayVsyncPeriod;
     case HWC2::FunctionDescriptor::SetActiveConfigWithConstraints:
-      return ToHook<HWC2_PFN_SET_ACTIVE_CONFIG_WITH_CONSTRAINTS>(
-          DisplayHook<decltype(&HwcDisplay::SetActiveConfigWithConstraints),
-                      &HwcDisplay::SetActiveConfigWithConstraints,
-                      hwc2_config_t, hwc_vsync_period_change_constraints_t *,
-                      hwc_vsync_period_change_timeline_t *>);
+      return (hwc2_function_pointer_t)SetActiveConfigWithConstraints;
     case HWC2::FunctionDescriptor::SetAutoLowLatencyMode:
       return (hwc2_function_pointer_t)SetAutoLowLatencyMode;
     case HWC2::FunctionDescriptor::GetSupportedContentTypes:
       return (hwc2_function_pointer_t)GetSupportedContentTypes;
     case HWC2::FunctionDescriptor::SetContentType:
-      return ToHook<HWC2_PFN_SET_CONTENT_TYPE>(
-          DisplayHook<decltype(&HwcDisplay::SetContentType),
-                      &HwcDisplay::SetContentType, int32_t>);
-#endif
+      return (hwc2_function_pointer_t)SetContentType;
+
     // Layer functions
     case HWC2::FunctionDescriptor::SetCursorPosition:
       return (hwc2_function_pointer_t)SetCursorPosition;

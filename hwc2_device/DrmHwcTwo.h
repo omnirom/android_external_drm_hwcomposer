@@ -31,22 +31,27 @@ class DrmHwcTwo : public DrmHwc {
                                hwc2_function_pointer_t function);
 
   // DrmHwc
-  void SendVsyncEventToClient(hwc2_display_t displayid, int64_t timestamp,
+  void SendVsyncEventToClient(DisplayHandle display_handle, int64_t timestamp,
                               uint32_t vsync_period) const override;
   void SendVsyncPeriodTimingChangedEventToClient(
-      hwc2_display_t displayid, int64_t timestamp) const override;
-  void SendRefreshEventToClient(uint64_t displayid) override;
-  void SendHotplugEventToClient(hwc2_display_t displayid,
+      DisplayHandle display_handle, int64_t timestamp) const override;
+  void SendRefreshEventToClient(DisplayHandle display_handle) override;
+  void SendHotplugEventToClient(DisplayHandle display_handle,
                                 DisplayStatus display_status) override;
+
+  const std::string& RefreshStateDump();
+  const std::string& GetLastStateDump() const {
+    return last_state_dump_;
+  }
 
  private:
   std::pair<HWC2_PFN_HOTPLUG, hwc2_callback_data_t> hotplug_callback_{};
   std::pair<HWC2_PFN_VSYNC, hwc2_callback_data_t> vsync_callback_{};
-#if __ANDROID_API__ > 29
   std::pair<HWC2_PFN_VSYNC_2_4, hwc2_callback_data_t> vsync_2_4_callback_{};
   std::pair<HWC2_PFN_VSYNC_PERIOD_TIMING_CHANGED, hwc2_callback_data_t>
       period_timing_changed_callback_{};
-#endif
   std::pair<HWC2_PFN_REFRESH, hwc2_callback_data_t> refresh_callback_{};
+
+  std::string last_state_dump_;
 };
 }  // namespace android

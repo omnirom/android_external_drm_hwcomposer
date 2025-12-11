@@ -1,12 +1,174 @@
 {
-  "presubmit": [
-    {
-      "name": "VtsHalGraphicsComposer3_TargetTest"
-    }
-  ],
   "desktop-presubmit": [
     {
       "name": "VtsHalGraphicsComposer3_TargetTest"
+    },
+    {
+      "name": "CfVkmsCursorTest"
+    },
+    {
+      "name": "Vkms2_VtsHalGraphicsComposer3"
+    },
+    {
+      "name": "Vkms5WithConfig_VtsHalGraphicsComposer3"
+    },
+    {
+      "name": "VkmsTestHwcHotplugs"
+    }
+  ],
+  "desktop-postsubmit": [
+    {
+      "name": "CtsDisplayTestCases"
+    },
+    {
+      "name": "CtsGraphicsTestCases",
+      "options": [
+        {
+          "include-filter": "android.graphics.cts.ANativeWindowTest"
+        },
+        {
+          "include-filter": "android.graphics.cts.ASurfaceTextureTest"
+        },
+        {
+          "include-filter": "android.graphics.cts.BasicVulkanGpuTest0"
+        },
+        {
+          "include-filter": "android.graphics.cts.BitmapColorSpaceTest"
+        },
+        {
+          "include-filter": "android.graphics.cts.ColorSpaceTest"
+        },
+        {
+          "include-filter": "android.graphics.cts.EGL14Test"
+        },
+        {
+          "include-filter": "android.graphics.cts.EGL15Test"
+        },
+        {
+          "include-filter": "android.graphics.cts.FrameRateOverrideTest"
+        },
+        {
+          "include-filter": "android.graphics.cts.HardwareRendererTest"
+        },
+        {
+          "include-filter": "android.graphics.cts.MatchContentFrameRateTest"
+        },
+        {
+          "include-filter": "android.graphics.cts.PixelFormatTest"
+        },
+        {
+          "include-filter": "android.graphics.cts.SetFrameRateTest"
+        },
+        {
+          "include-filter": "android.graphics.cts.VulkanFeaturesTest0"
+        },
+        {
+          "include-filter": "android.graphics.cts.VulkanPreTransformTest"
+        }
+      ]
+    },
+    // CF VKMS Tests
+    {
+      "name": "CfVkmsConnectorsTest"
+    },
+    {
+      "name": "CfVkmsDisplaysTest"
+    },
+    // VKMS Wrapper Tests
+    {
+      "name": "Vkms2_SurfaceFlingerTest"
+    },
+    // HWC Tests
+    {
+      "name": "TestHwcComposition"
+    },
+    {
+      "name": "VkmsTestHwcWriteback"
+    },
+    // IGT Tests
+    {
+      "name": "IgtCoreAuthTestCases"
+    },
+    {
+      "name": "IgtDrmMmTestCases"
+    },
+    {
+      "name": "IgtKmsAddfbBasicTestCases"
+    },
+    {
+      "name": "IgtKmsAtomicTestCases"
+    },
+    {
+      "name": "IgtKmsAtomicInterruptibleTestCases"
+    },
+    {
+      "name": "IgtKmsBwTestCases"
+    },
+    {
+      "name": "IgtKmsColorTestCases"
+    },
+    {
+      "name": "IgtKmsConcurrentTestCases"
+    },
+    {
+      "name": "IgtKmsContentProtectionTestCases"
+    },
+    {
+      "name": "IgtKmsCursorEdgeWalkTestCases"
+    },
+    {
+      "name": "IgtKmsDisplayModesTestCases"
+    },
+    {
+      "name": "IgtKmsHdmiInjectTestCases"
+    },
+    {
+      "name": "IgtKmsHdrTestCases"
+    },
+    {
+      "name": "IgtKmsInvalidModeTestCases"
+    },
+    {
+      "name": "IgtKmsPipeCrcBasicTestCases"
+    },
+    {
+      "name": "IgtKmsPlaneCursorTestCases"
+    },
+    {
+      "name": "IgtKmsPlaneLowresTestCases"
+    },
+    {
+      "name": "IgtKmsPlaneMultipleTestCases"
+    },
+    {
+      "name": "IgtKmsPlaneScalingTestCases"
+    },
+    {
+      "name": "IgtKmsPlaneTestCases"
+    },
+    {
+      "name": "IgtKmsPropertiesTestCases"
+    },
+    {
+      "name": "IgtKmsRotationCrcTestCases"
+    },
+    {
+      "name": "IgtKmsScalingModesTestCases"
+    },
+    {
+      "name": "IgtKmsSetmodeTestCases"
+    },
+    {
+      "name": "IgtKmsSysfsEdidTimingTestCases"
+    },
+    {
+      "name": "IgtKmsTiledDisplayTestCases"
+    },
+    {
+      "name": "IgtKmsVBlankTestCases"
+    },
+    {
+      "name": "IgtKmsVrrTestCases"
     }
   ]
 }

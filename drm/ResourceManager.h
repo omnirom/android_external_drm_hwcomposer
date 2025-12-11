@@ -18,19 +18,16 @@
 
 #include <cstring>
 #include <mutex>
+#include <set>
 
 #include "DrmDevice.h"
 #include "DrmDisplayPipeline.h"
 #include "DrmFbImporter.h"
 #include "DrmProperty.h"
 #include "UEventListener.h"
+#include "utils/properties.h"
 
 namespace android {
-
-enum class CtmHandling {
-  kDrmOrGpu,    /* Handled by DRM is possible, otherwise by GPU */
-  kDrmOrIgnore, /* Handled by DRM is possible, otherwise displayed as is */
-};
 
 class PipelineToFrontendBindingInterface {
  public:
@@ -70,6 +67,7 @@ class ResourceManager {
 
   auto GetVirtualDisplayPipeline() -> std::shared_ptr<DrmDisplayPipeline>;
   auto GetWritebackConnectorsCount() -> uint32_t;
+  auto GetInternalDisplayNames() -> const std::set<std::string>&;
 
   static auto GetTimeMonotonicNs() -> int64_t;
 
@@ -79,6 +77,7 @@ class ResourceManager {
   void DetachAllFrontendDisplays();
 
   std::vector<std::unique_ptr<DrmDevice>> drms_;
+  std::set<std::string> displays_;
 
   // Android properties:
   bool scale_with_gpu_{};

@@ -30,6 +30,16 @@
 
 namespace android {
 
+namespace {
+// Ensure that |src| does not exceed the bounds of the buffer.
+void ClipSourceCrop(SrcRectInfo::FRect &src, const BufferInfo &buffer_info) {
+  src.left = std::max(src.left, 0.F);
+  src.top = std::max(src.top, 0.F);
+  src.right = std::min(src.right, static_cast<float>(buffer_info.width));
+  src.bottom = std::min(src.bottom, static_cast<float>(buffer_info.height));
+}
+}  // namespace
+
 auto DrmPlane::CreateInstance(DrmDevice &dev, uint32_t plane_id)
     -> std::unique_ptr<DrmPlane> {
   auto p = MakeDrmModePlaneUnique(*dev.GetFd(), plane_id);
@@ -138,6 +148,9 @@ int DrmPlane::Init() {
     size_hints_property_.GetBlobData(size_hints_);
   }
 
+  GetPlaneProperty("FB_DAMAGE_CLIPS", fb_damage_clips_property_,
+                   Presence::kOptional);
+
   return 0;
 }
 
@@ -183,7 +196,7 @@ static uint64_t ToDrmRotation(LayerTransform transform) {
   return rotation;
 }
 
-bool DrmPlane::IsValidForLayer(LayerData *layer) {
+bool DrmPlane::IsValidForLayer(const LayerData *layer) {
   if (layer == nullptr || !layer->bi) {
     ALOGE("%s: Invalid parameters", __func__);
     return false;
@@ -214,13 +227,6 @@ bool DrmPlane::IsValidForLayer(LayerData *layer) {
     return false;
   }
 
-  if (type_ == DRM_PLANE_TYPE_CURSOR &&
-      !IsBufferValidForCursorPlane(layer->bi.value())) {
-    ALOGV("Buffer size %dx%d is not supported by cursor plane %d",
-          layer->bi->width, layer->bi->height, GetId());
-    return false;
-  }
-
   return true;
 }
 
@@ -242,9 +248,12 @@ static int To1616FixPt(float in) {
   return int(in * (1 << kBitShift));
 }
 
+// NOLINTNEXTLINE (readability-function-cognitive-complexity)
 auto DrmPlane::AtomicSetState(drmModeAtomicReq &pset, LayerData &layer,
                               uint32_t zpos, uint32_t crtc_id,
-                              DstRectInfo &whole_display_rect) -> int {
+                              DstRectInfo &whole_display_rect,
+                              DrmModeUserPropertyBlobUnique &damage_out) const
+    -> int {
   if (!layer.fb || !layer.bi) {
     ALOGE("%s: Invalid arguments", __func__);
     return -EINVAL;
@@ -291,6 +300,10 @@ auto DrmPlane::AtomicSetState(drmModeAtomicReq &pset, LayerData &layer,
            static_cast<float>(layer.bi->height)};
   }
 
+  // Clip the source crop rect to ensure it does not exceed the bounds of the
+  // framebuffer.
+  ClipSourceCrop(src, *layer.bi);
+
   if (!crtc_property_.AtomicSet(pset, crtc_id) ||
       !fb_property_.AtomicSet(pset, layer.fb->GetFbId()) ||
       !crtc_x_property_.AtomicSet(pset, disp.left) ||
@@ -317,20 +330,48 @@ auto DrmPlane::AtomicSetState(drmModeAtomicReq &pset, LayerData &layer,
 
   if (blending_enum_map_.count(layer.bi->blend_mode) != 0 &&
       !blend_property_.AtomicSet(pset,
-                                 blending_enum_map_[layer.bi->blend_mode])) {
+                                 blending_enum_map_.at(layer.bi->blend_mode))) {
     return -EINVAL;
   }
 
   if (color_encoding_enum_map_.count(layer.bi->color_space) != 0 &&
-      !color_encoding_property_
-           .AtomicSet(pset, color_encoding_enum_map_[layer.bi->color_space])) {
+      !color_encoding_property_.AtomicSet(pset, color_encoding_enum_map_.at(
+                                                    layer.bi->color_space))) {
     return -EINVAL;
   }
 
   if (color_range_enum_map_.count(layer.bi->sample_range) != 0 &&
-      !color_range_property_
-           .AtomicSet(pset, color_range_enum_map_[layer.bi->sample_range])) {
+      !color_range_property_.AtomicSet(pset, color_range_enum_map_.at(
+                                                 layer.bi->sample_range))) {
     return -EINVAL;
+  }
+
+  if (fb_damage_clips_property_) {
+    std::vector<drm_mode_rect> plane_damage;
+    for (const auto &rect : layer.pi.damage.dmg_rects) {
+      if (rect.left == rect.right || rect.top == rect.bottom) {
+        // SurfaceFlinger uses empty rects to signal no damage, but kernel
+        // doesn't support this.
+        continue;
+      }
+      plane_damage.emplace_back(drm_mode_rect{.x1 = rect.left,
+                                              .y1 = rect.top,
+                                              .x2 = rect.right,
+                                              .y2 = rect.bottom});
+    }
+
+    if (!plane_damage.empty()) {
+      size_t damage_size = sizeof(drm_mode_rect) * plane_damage.size();
+      damage_out = drm_->RegisterUserPropertyBlob(plane_damage.data(),
+                                                  damage_size);
+      if (!damage_out ||
+          !fb_damage_clips_property_.AtomicSet(pset, *damage_out)) {
+        ALOGE("%s: Failed to set %s property", __func__,
+              fb_damage_clips_property_.GetName().c_str());
+        // Continue without returning error code. FB_DAMAGE_CLIPS is an optional
+        // property. Default behavior is to assume full plane damage.
+      }
+    }
   }
 
   return 0;
@@ -360,23 +401,6 @@ auto DrmPlane::GetPlaneProperty(const char *prop_name, DrmProperty &property,
   }
 
   return true;
-}
-
-bool DrmPlane::HasCursorSizeConstraints() const {
-  return drm_->GetCapCursorSize().has_value() || !size_hints_.empty();
-}
-
-bool DrmPlane::IsBufferValidForCursorPlane(const BufferInfo &bi) const {
-  if (std::find_if(size_hints_.begin(), size_hints_.end(),
-                   [&](const auto &hint) -> bool {
-                     return bi.width == hint.width && bi.height == hint.height;
-                   }) != size_hints_.end()) {
-    return true;
-  }
-
-  const auto &cap_size = drm_->GetCapCursorSize();
-  return cap_size.has_value() && bi.width == cap_size->first &&
-         bi.height == cap_size->second;
 }
 
 }  // namespace android
